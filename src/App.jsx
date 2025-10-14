@@ -1,0 +1,899 @@
+import React, { useState, useEffect } from 'react';
+import { Trophy, Play, Users, User, Plus, X, LogIn, Settings, Sparkles, BookOpen, ArrowLeft, Download } from 'lucide-react';
+
+const RobotRaceGame = () => {
+  const [view, setView] = useState('home');
+  const [userRole, setUserRole] = useState(null);
+  const [roomCode, setRoomCode] = useState('');
+  const [playerName, setPlayerName] = useState('');
+  const [gameMode, setGameMode] = useState('multi');
+  
+  const [classrooms, setClassrooms] = useState([]);
+  const [currentClassroom, setCurrentClassroom] = useState(null);
+  const [classroomName, setClassroomName] = useState('');
+  
+  const [questions, setQuestions] = useState([]);
+  const [selectedTopic, setSelectedTopic] = useState('');
+  const [difficulty, setDifficulty] = useState('mittel');
+  const [questionCount, setQuestionCount] = useState(5);
+  const [isGenerating, setIsGenerating] = useState(false);
+  
+  const [currentQuestion, setCurrentQuestion] = useState(0);
+  const [players, setPlayers] = useState([]);
+  const [gameStarted, setGameStarted] = useState(false);
+  const [gameFinished, setGameFinished] = useState(false);
+  const [selectedAnswer, setSelectedAnswer] = useState(null);
+  const [showFeedback, setShowFeedback] = useState(false);
+
+  const robots = ['🤖', '🦾', '🦿', '🛸', '👾', '🚀'];
+  const colors = ['bg-blue-500', 'bg-purple-500', 'bg-pink-500', 'bg-green-500', 'bg-yellow-500', 'bg-red-500'];
+
+  const generateRoomCode = () => {
+    return Math.random().toString(36).substring(2, 8).toUpperCase();
+  };
+
+  const generateQuestionsWithAI = async () => {
+    setIsGenerating(true);
+    try {
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 2000,
+          messages: [
+            { 
+              role: "user", 
+              content: `Erstelle ${questionCount} Quiz-Fragen zum Thema "${selectedTopic}" mit Schwierigkeitsgrad "${difficulty}" für ein Lernspiel.
+
+WICHTIG: Deine Antwort muss NUR ein gültiges JSON-Objekt sein, nichts anderes. Keine Backticks, keine Erklärungen, nur das JSON.
+
+Format (genau so verwenden):
+{
+  "questions": [
+    {
+      "question": "Fragentext hier",
+      "answers": ["Antwort 1", "Antwort 2", "Antwort 3", "Antwort 4"],
+      "correct": 0
+    }
+  ]
+}
+
+Regeln:
+- Genau ${questionCount} Fragen erstellen
+- Jede Frage hat genau 4 Antwortmöglichkeiten
+- "correct" ist der Index der richtigen Antwort (0-3)
+- Fragen sollen altersgerecht und klar formuliert sein
+- Schwierigkeitsgrad "${difficulty}" beachten
+- Thema: ${selectedTopic}
+
+ANTWORTE NUR MIT DEM JSON-OBJEKT, OHNE ZUSÄTZLICHEN TEXT!`
+            }
+          ]
+        })
+      });
+
+      const data = await response.json();
+      let responseText = data.content[0].text;
+      
+      responseText = responseText.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+      
+      const parsedData = JSON.parse(responseText);
+      setQuestions(parsedData.questions);
+      setIsGenerating(false);
+      return true;
+    } catch (error) {
+      console.error("Fehler beim Generieren:", error);
+      setIsGenerating(false);
+      alert("Fehler beim Generieren der Fragen. Bitte versuche es erneut.");
+      return false;
+    }
+  };
+
+  const startSinglePlayer = async () => {
+    if (!selectedTopic) {
+      alert("Bitte wähle ein Thema!");
+      return;
+    }
+    const success = await generateQuestionsWithAI();
+    if (success) {
+      setPlayerName("Du");
+      setPlayers([
+        {
+          id: 1,
+          name: "Du",
+          position: 0,
+          score: 0,
+          robot: robots[0],
+          color: colors[0],
+          isComputer: false
+        },
+        {
+          id: 2,
+          name: "Computer",
+          position: 0,
+          score: 0,
+          robot: robots[1],
+          color: colors[1],
+          isComputer: true
+        }
+      ]);
+      setGameStarted(true);
+      setView('game');
+    }
+  };
+
+  const createMultiplayerRoom = async () => {
+    if (!selectedTopic || !playerName) {
+      alert("Bitte fülle alle Felder aus!");
+      return;
+    }
+    const success = await generateQuestionsWithAI();
+    if (success) {
+      const code = generateRoomCode();
+      setRoomCode(code);
+      const newPlayer = {
+        id: Date.now(),
+        name: playerName,
+        position: 0,
+        score: 0,
+        robot: robots[0],
+        color: colors[0]
+      };
+      setPlayers([newPlayer]);
+      setUserRole('host');
+      setView('player-wait');
+    }
+  };
+
+  const joinMultiplayerRoom = () => {
+    if (roomCode.trim() && playerName.trim()) {
+      const newPlayer = {
+        id: Date.now(),
+        name: playerName,
+        position: 0,
+        score: 0,
+        robot: robots[players.length % robots.length],
+        color: colors[players.length % colors.length]
+      };
+      setPlayers([...players, newPlayer]);
+      setUserRole('player');
+      setView('player-wait');
+    }
+  };
+
+  const createClassroom = async () => {
+    if (!classroomName.trim()) {
+      alert("Bitte gib einen Klassennamen ein!");
+      return;
+    }
+    const newClassroom = {
+      id: Date.now(),
+      name: classroomName,
+      code: generateRoomCode(),
+      questions: [],
+      students: [],
+      results: []
+    };
+    setClassrooms([...classrooms, newClassroom]);
+    setCurrentClassroom(newClassroom);
+    setClassroomName('');
+  };
+
+  const handleAnswer = (answerIndex) => {
+    setSelectedAnswer(answerIndex);
+    setShowFeedback(true);
+
+    const isCorrect = answerIndex === questions[currentQuestion].correct;
+    const updatedPlayers = [...players];
+    
+    if (isCorrect) {
+      const playerIndex = players.findIndex(p => !p.isComputer);
+      if (playerIndex !== -1) {
+        updatedPlayers[playerIndex].position += 1;
+        updatedPlayers[playerIndex].score += 10;
+      }
+    }
+
+    const computerPlayer = players.find(p => p.isComputer);
+    if (computerPlayer) {
+      let computerCorrectChance = 0.7;
+      if (difficulty === 'leicht') computerCorrectChance = 0.5;
+      if (difficulty === 'schwer') computerCorrectChance = 0.85;
+      
+      const computerIsCorrect = Math.random() < computerCorrectChance;
+      if (computerIsCorrect) {
+        const computerIndex = players.findIndex(p => p.isComputer);
+        if (computerIndex !== -1) {
+          updatedPlayers[computerIndex].position += 1;
+          updatedPlayers[computerIndex].score += 10;
+        }
+      }
+    }
+
+    setPlayers(updatedPlayers);
+
+    setTimeout(() => {
+      setShowFeedback(false);
+      setSelectedAnswer(null);
+      
+      if (currentQuestion < questions.length - 1) {
+        setCurrentQuestion(currentQuestion + 1);
+      } else {
+        setGameFinished(true);
+        setView('results');
+      }
+    }, 1500);
+  };
+
+  const resetGame = () => {
+    setView('home');
+    setUserRole(null);
+    setRoomCode('');
+    setPlayerName('');
+    setSelectedTopic('');
+    setCurrentQuestion(0);
+    setPlayers([]);
+    setGameStarted(false);
+    setGameFinished(false);
+    setSelectedAnswer(null);
+    setShowFeedback(false);
+    setQuestions([]);
+  };
+
+  if (view === 'home') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-600 flex items-center justify-center p-4">
+        <div className="max-w-4xl w-full">
+          <div className="text-center mb-12">
+            <div className="text-8xl mb-4">🤖</div>
+            <h1 className="text-6xl font-bold text-white mb-4">Roboter-Rennen</h1>
+            <p className="text-xl text-white/90">KI-gestütztes Quiz-Rennspiel</p>
+          </div>
+
+          <div className="grid md:grid-cols-3 gap-6">
+            <button
+              onClick={() => setView('single-setup')}
+              className="bg-white rounded-2xl p-8 shadow-2xl hover:shadow-3xl transform hover:scale-105 transition-all duration-300"
+            >
+              <User className="w-16 h-16 mx-auto mb-4 text-blue-600" />
+              <h2 className="text-2xl font-bold text-gray-800 mb-2">Einzelspieler</h2>
+              <p className="text-gray-600">Alleine gegen die Zeit spielen</p>
+            </button>
+
+            <button
+              onClick={() => setView('multi-create')}
+              className="bg-white rounded-2xl p-8 shadow-2xl hover:shadow-3xl transform hover:scale-105 transition-all duration-300"
+            >
+              <Users className="w-16 h-16 mx-auto mb-4 text-green-600" />
+              <h2 className="text-2xl font-bold text-gray-800 mb-2">Mehrspieler</h2>
+              <p className="text-gray-600">Mit Freunden spielen</p>
+            </button>
+
+            <button
+              onClick={() => setView('organizer')}
+              className="bg-white rounded-2xl p-8 shadow-2xl hover:shadow-3xl transform hover:scale-105 transition-all duration-300"
+            >
+              <Settings className="w-16 h-16 mx-auto mb-4 text-purple-600" />
+              <h2 className="text-2xl font-bold text-gray-800 mb-2">Lernorganisator</h2>
+              <p className="text-gray-600">Klassenräume verwalten</p>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (view === 'single-setup') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center p-4">
+        <div className="max-w-2xl w-full bg-white rounded-2xl shadow-2xl p-8">
+          <button onClick={() => setView('home')} className="mb-6 text-gray-600 hover:text-gray-800 flex items-center">
+            <ArrowLeft className="mr-2" size={20} />
+            Zurück
+          </button>
+          
+          <div className="text-center mb-8">
+            <div className="text-6xl mb-4">🤖</div>
+            <h2 className="text-4xl font-bold text-gray-800 mb-2">Einzelspieler</h2>
+            <p className="text-gray-600">Wähle ein Thema und die KI erstellt Fragen für dich!</p>
+          </div>
+
+          <div className="space-y-6">
+            <div>
+              <label className="block text-lg font-semibold text-gray-700 mb-3">
+                <Sparkles className="inline mr-2 text-yellow-500" size={20} />
+                Wähle dein Thema:
+              </label>
+              <input
+                type="text"
+                value={selectedTopic}
+                onChange={(e) => setSelectedTopic(e.target.value)}
+                placeholder="z.B. Mathematik, Geschichte, Biologie..."
+                className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none text-lg"
+              />
+            </div>
+
+            <div>
+              <label className="block text-lg font-semibold text-gray-700 mb-3">Schwierigkeitsgrad:</label>
+              <div className="grid grid-cols-3 gap-3">
+                {['leicht', 'mittel', 'schwer'].map((level) => (
+                  <button
+                    key={level}
+                    onClick={() => setDifficulty(level)}
+                    className={`py-3 px-4 rounded-lg font-semibold transition-all ${
+                      difficulty === level
+                        ? 'bg-blue-600 text-white shadow-lg'
+                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                    }`}
+                  >
+                    {level.charAt(0).toUpperCase() + level.slice(1)}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-lg font-semibold text-gray-700 mb-3">Anzahl Fragen:</label>
+              <select
+                value={questionCount}
+                onChange={(e) => setQuestionCount(Number(e.target.value))}
+                className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none text-lg"
+              >
+                <option value={3}>3 Fragen</option>
+                <option value={5}>5 Fragen</option>
+                <option value={10}>10 Fragen</option>
+                <option value={15}>15 Fragen</option>
+              </select>
+            </div>
+
+            <button
+              onClick={startSinglePlayer}
+              disabled={!selectedTopic || isGenerating}
+              className="w-full bg-gradient-to-r from-green-500 to-emerald-600 text-white py-4 rounded-xl font-bold text-xl hover:from-green-600 hover:to-emerald-700 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed transition-all shadow-lg"
+            >
+              {isGenerating ? (
+                <>
+                  <Sparkles className="inline mr-2 animate-spin" size={24} />
+                  KI erstellt Fragen...
+                </>
+              ) : (
+                <>
+                  <Play className="inline mr-2" size={24} />
+                  Spiel starten
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (view === 'multi-create') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center p-4">
+        <div className="max-w-2xl w-full bg-white rounded-2xl shadow-2xl p-8">
+          <button onClick={() => setView('home')} className="mb-6 text-gray-600 hover:text-gray-800 flex items-center">
+            <ArrowLeft className="mr-2" size={20} />
+            Zurück
+          </button>
+          
+          <div className="text-center mb-8">
+            <div className="text-6xl mb-4">👥</div>
+            <h2 className="text-4xl font-bold text-gray-800 mb-2">Mehrspieler erstellen</h2>
+            <p className="text-gray-600">Erstelle ein Spiel und lade deine Freunde ein!</p>
+          </div>
+
+          <div className="space-y-6">
+            <div>
+              <label className="block text-lg font-semibold text-gray-700 mb-3">Dein Name:</label>
+              <input
+                type="text"
+                value={playerName}
+                onChange={(e) => setPlayerName(e.target.value)}
+                placeholder="Wie heißt du?"
+                className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-green-500 focus:outline-none text-lg"
+              />
+            </div>
+
+            <div>
+              <label className="block text-lg font-semibold text-gray-700 mb-3">
+                <Sparkles className="inline mr-2 text-yellow-500" size={20} />
+                Thema:
+              </label>
+              <input
+                type="text"
+                value={selectedTopic}
+                onChange={(e) => setSelectedTopic(e.target.value)}
+                placeholder="z.B. Geographie, Deutsch, Musik..."
+                className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-green-500 focus:outline-none text-lg"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-lg font-semibold text-gray-700 mb-3">Schwierigkeit:</label>
+                <select
+                  value={difficulty}
+                  onChange={(e) => setDifficulty(e.target.value)}
+                  className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-green-500 focus:outline-none"
+                >
+                  <option value="leicht">Leicht</option>
+                  <option value="mittel">Mittel</option>
+                  <option value="schwer">Schwer</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-lg font-semibold text-gray-700 mb-3">Fragen:</label>
+                <select
+                  value={questionCount}
+                  onChange={(e) => setQuestionCount(Number(e.target.value))}
+                  className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-green-500 focus:outline-none"
+                >
+                  <option value={3}>3</option>
+                  <option value={5}>5</option>
+                  <option value={10}>10</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex gap-4">
+              <button
+                onClick={createMultiplayerRoom}
+                disabled={!selectedTopic || !playerName || isGenerating}
+                className="flex-1 bg-gradient-to-r from-green-500 to-emerald-600 text-white py-4 rounded-xl font-bold text-xl hover:from-green-600 hover:to-emerald-700 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed transition-all shadow-lg"
+              >
+                {isGenerating ? "Wird erstellt..." : "Raum erstellen"}
+              </button>
+              <button
+                onClick={() => setView('multi-join')}
+                className="flex-1 bg-gray-200 text-gray-800 py-4 rounded-xl font-bold text-xl hover:bg-gray-300 transition-all"
+              >
+                Raum beitreten
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (view === 'multi-join') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-white rounded-2xl shadow-2xl p-8">
+          <button onClick={() => setView('multi-create')} className="mb-6 text-gray-600 hover:text-gray-800 flex items-center">
+            <ArrowLeft className="mr-2" size={20} />
+            Zurück
+          </button>
+          
+          <div className="text-center mb-8">
+            <div className="text-6xl mb-4">🔗</div>
+            <h2 className="text-3xl font-bold text-gray-800 mb-2">Raum beitreten</h2>
+            <p className="text-gray-600">Gib den Code ein, den dir dein Freund gegeben hat</p>
+          </div>
+
+          <div className="space-y-4">
+            <div>
+              <label className="block text-lg font-semibold text-gray-700 mb-3">Raumcode:</label>
+              <input
+                type="text"
+                value={roomCode}
+                onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
+                placeholder="6-stelliger Code"
+                maxLength={6}
+                className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg text-center text-2xl font-mono focus:border-green-500 focus:outline-none"
+              />
+            </div>
+            
+            <div>
+              <label className="block text-lg font-semibold text-gray-700 mb-3">Dein Name:</label>
+              <input
+                type="text"
+                value={playerName}
+                onChange={(e) => setPlayerName(e.target.value)}
+                placeholder="Wie heißt du?"
+                className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-green-500 focus:outline-none text-lg"
+              />
+            </div>
+
+            <button
+              onClick={joinMultiplayerRoom}
+              disabled={!roomCode || !playerName}
+              className="w-full bg-gradient-to-r from-green-500 to-emerald-600 text-white py-4 rounded-xl font-bold text-xl hover:from-green-600 hover:to-emerald-700 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed transition-all shadow-lg"
+            >
+              <LogIn className="inline mr-2" size={24} />
+              Beitreten
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (view === 'player-wait') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-purple-600 to-pink-600 flex items-center justify-center p-4">
+        <div className="max-w-2xl w-full bg-white rounded-2xl shadow-2xl p-8">
+          <div className="text-center mb-8">
+            <div className="text-6xl mb-4 animate-bounce">🤖</div>
+            <h2 className="text-4xl font-bold text-gray-800 mb-4">Warte auf andere Spieler...</h2>
+            <div className="bg-gradient-to-r from-purple-500 to-pink-500 rounded-xl p-6 text-white mb-6">
+              <p className="text-sm opacity-90 mb-2">Raumcode zum Teilen:</p>
+              <p className="text-5xl font-bold font-mono tracking-wider">{roomCode}</p>
+            </div>
+          </div>
+
+          <div className="mb-8">
+            <h3 className="text-xl font-semibold text-gray-700 mb-4">Angemeldete Spieler ({players.length}):</h3>
+            <div className="grid grid-cols-2 gap-4">
+              {players.map((player) => (
+                <div key={player.id} className="bg-gradient-to-br from-purple-100 to-pink-100 rounded-lg p-4 text-center">
+                  <div className="text-4xl mb-2">{player.robot}</div>
+                  <p className="font-semibold text-gray-800">{player.name}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {userRole === 'host' && (
+            <button
+              onClick={() => {
+                setGameStarted(true);
+                setView('game');
+              }}
+              disabled={players.length < 1}
+              className="w-full bg-gradient-to-r from-green-500 to-emerald-600 text-white py-4 rounded-xl font-bold text-xl hover:from-green-600 hover:to-emerald-700 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed transition-all shadow-lg"
+            >
+              <Play className="inline mr-2" size={24} />
+              Spiel starten
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (view === 'organizer') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-purple-100 to-pink-100 p-6">
+        <div className="max-w-6xl mx-auto">
+          <button onClick={() => setView('home')} className="mb-6 text-gray-600 hover:text-gray-800 flex items-center">
+            <ArrowLeft className="mr-2" size={20} />
+            Zurück
+          </button>
+
+          <div className="bg-white rounded-2xl shadow-2xl p-8 mb-6">
+            <div className="flex items-center justify-between mb-8">
+              <div>
+                <h1 className="text-4xl font-bold text-gray-800 mb-2">Lernorganisator</h1>
+                <p className="text-gray-600">Verwalte Klassenräume und erstelle KI-generierte Quizze</p>
+              </div>
+              <BookOpen className="w-16 h-16 text-purple-600" />
+            </div>
+
+            <div className="bg-gradient-to-r from-purple-50 to-pink-50 rounded-xl p-6 mb-6">
+              <h2 className="text-2xl font-bold text-gray-800 mb-4">Neuer Klassenraum</h2>
+              <div className="flex gap-4">
+                <input
+                  type="text"
+                  value={classroomName}
+                  onChange={(e) => setClassroomName(e.target.value)}
+                  placeholder="z.B. Klasse 5a, Mathe-Gruppe..."
+                  className="flex-1 px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-purple-500 focus:outline-none"
+                />
+                <button
+                  onClick={createClassroom}
+                  disabled={!classroomName.trim()}
+                  className="bg-purple-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-purple-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+                >
+                  <Plus className="inline mr-2" size={20} />
+                  Erstellen
+                </button>
+              </div>
+            </div>
+
+            {classrooms.length > 0 && (
+              <div>
+                <h2 className="text-2xl font-bold text-gray-800 mb-4">Deine Klassenräume</h2>
+                <div className="grid md:grid-cols-2 gap-4">
+                  {classrooms.map((classroom) => (
+                    <div
+                      key={classroom.id}
+                      onClick={() => setCurrentClassroom(classroom)}
+                      className="bg-white border-2 border-gray-200 rounded-xl p-6 hover:border-purple-500 cursor-pointer transition-all"
+                    >
+                      <div className="flex justify-between items-start mb-4">
+                        <div>
+                          <h3 className="text-xl font-bold text-gray-800">{classroom.name}</h3>
+                          <p className="text-sm text-gray-600">Code: {classroom.code}</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-sm text-gray-600">{classroom.students.length} Schüler</p>
+                          <p className="text-sm text-gray-600">{classroom.questions.length} Fragen</p>
+                        </div>
+                      </div>
+                      <button className="w-full bg-purple-100 text-purple-700 py-2 rounded-lg font-semibold hover:bg-purple-200 transition-colors">
+                        Verwalten
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {classrooms.length === 0 && (
+              <div className="text-center py-12 text-gray-500">
+                <BookOpen className="w-20 h-20 mx-auto mb-4 opacity-50" />
+                <p className="text-lg">Noch keine Klassenräume erstellt</p>
+                <p>Erstelle deinen ersten Klassenraum oben!</p>
+              </div>
+            )}
+          </div>
+
+          {currentClassroom && (
+            <div className="bg-white rounded-2xl shadow-2xl p-8">
+              <div className="flex justify-between items-center mb-6">
+                <div>
+                  <h2 className="text-3xl font-bold text-gray-800">{currentClassroom.name}</h2>
+                  <p className="text-gray-600">Code: {currentClassroom.code}</p>
+                </div>
+                <button
+                  onClick={() => setCurrentClassroom(null)}
+                  className="text-gray-500 hover:text-gray-700"
+                >
+                  <X size={24} />
+                </button>
+              </div>
+
+              <div className="bg-gradient-to-r from-yellow-50 to-orange-50 rounded-xl p-6 mb-6">
+                <h3 className="text-xl font-bold text-gray-800 mb-4 flex items-center">
+                  <Sparkles className="mr-2 text-yellow-500" size={24} />
+                  KI-Fragengenerator
+                </h3>
+                
+                <div className="grid md:grid-cols-2 gap-4 mb-4">
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Thema:</label>
+                    <input
+                      type="text"
+                      value={selectedTopic}
+                      onChange={(e) => setSelectedTopic(e.target.value)}
+                      placeholder="z.B. Bruchrechnen, Photosynthese..."
+                      className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-yellow-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Schwierigkeit:</label>
+                    <select
+                      value={difficulty}
+                      onChange={(e) => setDifficulty(e.target.value)}
+                      className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-yellow-500 focus:outline-none"
+                    >
+                      <option value="leicht">Leicht</option>
+                      <option value="mittel">Mittel</option>
+                      <option value="schwer">Schwer</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Anzahl:</label>
+                    <select
+                      value={questionCount}
+                      onChange={(e) => setQuestionCount(Number(e.target.value))}
+                      className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-yellow-500 focus:outline-none"
+                    >
+                      <option value={5}>5 Fragen</option>
+                      <option value={10}>10 Fragen</option>
+                      <option value={15}>15 Fragen</option>
+                      <option value={20}>20 Fragen</option>
+                    </select>
+                  </div>
+                </div>
+
+                <button
+                  onClick={async () => {
+                    const success = await generateQuestionsWithAI();
+                    if (success) {
+                      const updated = classrooms.map(c => 
+                        c.id === currentClassroom.id 
+                          ? {...c, questions: [...c.questions, ...questions]}
+                          : c
+                      );
+                      setClassrooms(updated);
+                      setCurrentClassroom({...currentClassroom, questions: [...currentClassroom.questions, ...questions]});
+                      alert(`${questions.length} Fragen wurden erfolgreich hinzugefügt!`);
+                    }
+                  }}
+                  disabled={!selectedTopic || isGenerating}
+                  className="w-full bg-gradient-to-r from-yellow-500 to-orange-500 text-white py-3 rounded-lg font-bold hover:from-yellow-600 hover:to-orange-600 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed transition-all"
+                >
+                  {isGenerating ? (
+                    <>
+                      <Sparkles className="inline mr-2 animate-spin" size={20} />
+                      KI generiert Fragen...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="inline mr-2" size={20} />
+                      Fragen generieren
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {currentClassroom.questions.length > 0 && (
+                <div>
+                  <h3 className="text-xl font-bold text-gray-800 mb-4">
+                    Fragenkatalog ({currentClassroom.questions.length})
+                  </h3>
+                  <div className="space-y-3 max-h-96 overflow-y-auto">
+                    {currentClassroom.questions.map((q, idx) => (
+                      <div key={idx} className="bg-gray-50 rounded-lg p-4">
+                        <p className="font-semibold text-gray-800 mb-2">{idx + 1}. {q.question}</p>
+                        <div className="grid grid-cols-2 gap-2 text-sm">
+                          {q.answers.map((a, aIdx) => (
+                            <div
+                              key={aIdx}
+                              className={`px-3 py-1 rounded ${
+                                aIdx === q.correct ? 'bg-green-100 text-green-700 font-semibold' : 'bg-white text-gray-600'
+                              }`}
+                            >
+                              {a}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (view === 'game' && !gameFinished) {
+    const progress = ((currentQuestion + 1) / questions.length) * 100;
+    const maxPosition = questions.length;
+
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-indigo-500 to-purple-600 p-6">
+        <div className="max-w-6xl mx-auto">
+          <div className="bg-white rounded-2xl shadow-2xl p-6 mb-6">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-2xl font-bold text-gray-800">
+                Frage {currentQuestion + 1} / {questions.length}
+              </h2>
+              {players.length > 0 && (
+                <div className="text-lg font-semibold text-purple-600">
+                  Deine Punkte: {players.find(p => !p.isComputer)?.score || 0}
+                </div>
+              )}
+            </div>
+            <div className="w-full bg-gray-200 rounded-full h-3">
+              <div
+                className="bg-gradient-to-r from-purple-500 to-pink-500 h-3 rounded-full transition-all duration-500"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-2xl p-8 mb-6">
+            <div className="space-y-6">
+              {players.map((player) => (
+                <div key={player.id} className="relative">
+                  <div className="flex items-center mb-2">
+                    <span className="text-sm font-semibold text-gray-700 w-32">{player.name}</span>
+                    <div className="flex-1 h-16 bg-gradient-to-r from-gray-200 to-gray-300 rounded-full relative overflow-hidden">
+                      <div className="absolute inset-0 flex items-center">
+                        {[...Array(5)].map((_, i) => (
+                          <div key={i} className="flex-1 border-r-2 border-gray-400 border-dashed h-full" />
+                        ))}
+                      </div>
+                      <div
+                        className="absolute top-1/2 -translate-y-1/2 text-4xl transition-all duration-500 ease-out"
+                        style={{ left: `${(player.position / maxPosition) * 95}%` }}
+                      >
+                        {player.robot}
+                      </div>
+                    </div>
+                    <div className="text-4xl ml-4">🏁</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-2xl p-8">
+            <h3 className="text-3xl font-bold text-gray-800 mb-8 text-center">
+              {questions[currentQuestion].question}
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {questions[currentQuestion].answers.map((answer, index) => {
+                const isSelected = selectedAnswer === index;
+                const isCorrect = index === questions[currentQuestion].correct;
+                const showResult = showFeedback && isSelected;
+
+                return (
+                  <button
+                    key={index}
+                    onClick={() => !showFeedback && handleAnswer(index)}
+                    disabled={showFeedback}
+                    className={`p-6 rounded-xl text-lg font-semibold transition-all transform hover:scale-105 ${
+                      showResult
+                        ? isCorrect
+                          ? 'bg-green-500 text-white'
+                          : 'bg-red-500 text-white'
+                        : 'bg-gray-100 hover:bg-purple-100 text-gray-800'
+                    } ${showFeedback ? 'cursor-not-allowed' : ''}`}
+                  >
+                    {answer}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (view === 'results') {
+    const sortedPlayers = [...players].sort((a, b) => b.score - a.score);
+
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-yellow-400 via-orange-500 to-red-500 flex items-center justify-center p-4">
+        <div className="max-w-2xl w-full bg-white rounded-2xl shadow-2xl p-8">
+          <div className="text-center mb-8">
+            <Trophy className="w-24 h-24 mx-auto mb-4 text-yellow-500" />
+            <h1 className="text-5xl font-bold text-gray-800 mb-2">Spiel beendet!</h1>
+            <p className="text-xl text-gray-600">Ergebnisse</p>
+          </div>
+
+          <div className="space-y-4 mb-8">
+            {sortedPlayers.map((player, index) => (
+              <div
+                key={player.id}
+                className={`flex items-center gap-4 p-6 rounded-xl ${
+                  index === 0
+                    ? 'bg-gradient-to-r from-yellow-400 to-yellow-500'
+                    : index === 1
+                    ? 'bg-gradient-to-r from-gray-300 to-gray-400'
+                    : index === 2
+                    ? 'bg-gradient-to-r from-orange-400 to-orange-500'
+                    : 'bg-gray-100'
+                }`}
+              >
+                <div className="text-4xl font-bold w-12 text-center">
+                  {index + 1}
+                </div>
+                <div className="text-5xl">{player.robot}</div>
+                <div className="flex-1">
+                  <p className="text-xl font-bold">{player.name}</p>
+                  <p className="text-lg">Punkte: {player.score}</p>
+                </div>
+                {index === 0 && <Trophy className="w-12 h-12 text-yellow-700" />}
+              </div>
+            ))}
+          </div>
+
+          <button
+            onClick={resetGame}
+            className="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white py-4 rounded-xl font-bold text-xl hover:from-purple-700 hover:to-pink-700 transition-all"
+          >
+            Zurück zum Start
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+};
+
+export default RobotRaceGame;
