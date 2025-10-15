@@ -1,12 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { Trophy, Play, Users, User, Plus, X, LogIn, Settings, Sparkles, BookOpen, ArrowLeft, Download } from 'lucide-react';
+import { Trophy, Play, Users, User, Plus, X, LogIn, Settings, Sparkles, BookOpen, ArrowLeft } from 'lucide-react';
+import { db } from './firebase';
+import { collection, addDoc, doc, getDoc, setDoc, updateDoc, onSnapshot, query, where, deleteDoc } from 'firebase/firestore';
 
 const RobotRaceGame = () => {
   const [view, setView] = useState('home');
   const [userRole, setUserRole] = useState(null);
   const [roomCode, setRoomCode] = useState('');
+  const [roomId, setRoomId] = useState(null);
   const [playerName, setPlayerName] = useState('');
-  const [gameMode, setGameMode] = useState('multi');
+  const [playerId, setPlayerId] = useState(null);
   
   const [classrooms, setClassrooms] = useState([]);
   const [currentClassroom, setCurrentClassroom] = useState(null);
@@ -32,65 +35,38 @@ const RobotRaceGame = () => {
     return Math.random().toString(36).substring(2, 8).toUpperCase();
   };
 
+  // ChatGPT API statt Claude
   const generateQuestionsWithAI = async () => {
-    setIsGenerating(true);
-    try {
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 2000,
-          messages: [
-            { 
-              role: "user", 
-              content: `Erstelle ${questionCount} Quiz-Fragen zum Thema "${selectedTopic}" mit Schwierigkeitsgrad "${difficulty}" für ein Lernspiel.
+  setIsGenerating(true);
+  try {
+    // Rufe unsere sichere API-Route auf!
+    const response = await fetch("/api/generate-questions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        topic: selectedTopic,
+        difficulty: difficulty,
+        questionCount: questionCount
+      })
+    });
 
-WICHTIG: Deine Antwort muss NUR ein gültiges JSON-Objekt sein, nichts anderes. Keine Backticks, keine Erklärungen, nur das JSON.
-
-Format (genau so verwenden):
-{
-  "questions": [
-    {
-      "question": "Fragentext hier",
-      "answers": ["Antwort 1", "Antwort 2", "Antwort 3", "Antwort 4"],
-      "correct": 0
+    if (!response.ok) {
+      throw new Error('API request failed');
     }
-  ]
-}
 
-Regeln:
-- Genau ${questionCount} Fragen erstellen
-- Jede Frage hat genau 4 Antwortmöglichkeiten
-- "correct" ist der Index der richtigen Antwort (0-3)
-- Fragen sollen altersgerecht und klar formuliert sein
-- Schwierigkeitsgrad "${difficulty}" beachten
-- Thema: ${selectedTopic}
-
-ANTWORTE NUR MIT DEM JSON-OBJEKT, OHNE ZUSÄTZLICHEN TEXT!`
-            }
-          ]
-        })
-      });
-
-      const data = await response.json();
-      let responseText = data.content[0].text;
-      
-      responseText = responseText.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-      
-      const parsedData = JSON.parse(responseText);
-      setQuestions(parsedData.questions);
-      setIsGenerating(false);
-      return true;
-    } catch (error) {
-      console.error("Fehler beim Generieren:", error);
-      setIsGenerating(false);
-      alert("Fehler beim Generieren der Fragen. Bitte versuche es erneut.");
-      return false;
-    }
-  };
+    const data = await response.json();
+    setQuestions(data.questions);
+    setIsGenerating(false);
+    return true;
+  } catch (error) {
+    console.error("Fehler beim Generieren:", error);
+    setIsGenerating(false);
+    alert("Fehler beim Generieren der Fragen. Bitte versuche es erneut.");
+    return false;
+  }
+};
 
   const startSinglePlayer = async () => {
     if (!selectedTopic) {
@@ -133,34 +109,128 @@ ANTWORTE NUR MIT DEM JSON-OBJEKT, OHNE ZUSÄTZLICHEN TEXT!`
     const success = await generateQuestionsWithAI();
     if (success) {
       const code = generateRoomCode();
-      setRoomCode(code);
-      const newPlayer = {
-        id: Date.now(),
-        name: playerName,
-        position: 0,
-        score: 0,
-        robot: robots[0],
-        color: colors[0]
-      };
-      setPlayers([newPlayer]);
-      setUserRole('host');
-      setView('player-wait');
+      const newPlayerId = Date.now().toString();
+      
+      try {
+        const roomRef = await addDoc(collection(db, 'rooms'), {
+          code: code,
+          topic: selectedTopic,
+          difficulty: difficulty,
+          questionCount: questionCount,
+          questions: questions,
+          players: [{
+            id: newPlayerId,
+            name: playerName,
+            position: 0,
+            score: 0,
+            robot: robots[0],
+            color: colors[0]
+          }],
+          status: 'waiting',
+          currentQuestion: 0,
+          gameStarted: false,
+          createdAt: new Date().toISOString(),
+          hostId: newPlayerId
+        });
+        
+        setRoomCode(code);
+        setRoomId(roomRef.id);
+        setPlayerId(newPlayerId);
+        setUserRole('host');
+        setView('player-wait');
+      } catch (error) {
+        console.error("Fehler beim Erstellen des Raums:", error);
+        alert("Fehler beim Erstellen des Raums!");
+      }
     }
   };
 
-  const joinMultiplayerRoom = () => {
-    if (roomCode.trim() && playerName.trim()) {
+  const joinMultiplayerRoom = async () => {
+    if (!roomCode.trim() || !playerName.trim()) {
+      alert("Bitte fülle alle Felder aus!");
+      return;
+    }
+
+    try {
+      const roomsRef = collection(db, 'rooms');
+      const q = query(roomsRef, where('code', '==', roomCode.toUpperCase()));
+      const snapshot = await getDocs(q);
+      
+      if (snapshot.empty) {
+        alert("Raum nicht gefunden! Prüfe den Code.");
+        return;
+      }
+
+      const roomDoc = snapshot.docs[0];
+      const roomData = roomDoc.data();
+      
+      if (roomData.gameStarted) {
+        alert("Spiel hat bereits begonnen!");
+        return;
+      }
+
+      const newPlayerId = Date.now().toString();
       const newPlayer = {
-        id: Date.now(),
+        id: newPlayerId,
         name: playerName,
         position: 0,
         score: 0,
-        robot: robots[players.length % robots.length],
-        color: colors[players.length % colors.length]
+        robot: robots[roomData.players.length % robots.length],
+        color: colors[roomData.players.length % colors.length]
       };
-      setPlayers([...players, newPlayer]);
+
+      await updateDoc(doc(db, 'rooms', roomDoc.id), {
+        players: [...roomData.players, newPlayer]
+      });
+
+      setRoomId(roomDoc.id);
+      setPlayerId(newPlayerId);
+      setRoomCode(roomCode.toUpperCase());
+      setQuestions(roomData.questions);
       setUserRole('player');
       setView('player-wait');
+    } catch (error) {
+      console.error("Fehler beim Beitreten:", error);
+      alert("Fehler beim Beitreten des Raums!");
+    }
+  };
+
+  // Echtzeit-Listener für Multiplayer-Raum
+  useEffect(() => {
+    if (!roomId) return;
+
+    const unsubscribe = onSnapshot(doc(db, 'rooms', roomId), (doc) => {
+      if (doc.exists()) {
+        const data = doc.data();
+        setPlayers(data.players || []);
+        
+        if (data.gameStarted && !gameStarted) {
+          setGameStarted(true);
+          setQuestions(data.questions);
+          setCurrentQuestion(data.currentQuestion || 0);
+          setView('game');
+        }
+        
+        if (data.currentQuestion !== undefined) {
+          setCurrentQuestion(data.currentQuestion);
+        }
+      }
+    });
+
+    return () => unsubscribe();
+  }, [roomId]);
+
+  const startMultiplayerGame = async () => {
+    if (userRole !== 'host') return;
+    
+    try {
+      await updateDoc(doc(db, 'rooms', roomId), {
+        gameStarted: true,
+        status: 'playing',
+        currentQuestion: 0
+      });
+    } catch (error) {
+      console.error("Fehler beim Starten:", error);
     }
   };
 
@@ -169,61 +239,129 @@ ANTWORTE NUR MIT DEM JSON-OBJEKT, OHNE ZUSÄTZLICHEN TEXT!`
       alert("Bitte gib einen Klassennamen ein!");
       return;
     }
-    const newClassroom = {
-      id: Date.now(),
-      name: classroomName,
-      code: generateRoomCode(),
-      questions: [],
-      students: [],
-      results: []
-    };
-    setClassrooms([...classrooms, newClassroom]);
-    setCurrentClassroom(newClassroom);
-    setClassroomName('');
+    
+    try {
+      const classroomRef = await addDoc(collection(db, 'classrooms'), {
+        name: classroomName,
+        code: generateRoomCode(),
+        questions: [],
+        students: [],
+        results: [],
+        createdAt: new Date().toISOString()
+      });
+      
+      alert("Klassenraum erstellt!");
+      setClassroomName('');
+      loadClassrooms();
+    } catch (error) {
+      console.error("Fehler beim Erstellen:", error);
+      alert("Fehler beim Erstellen des Klassenraums!");
+    }
   };
 
-  const handleAnswer = (answerIndex) => {
+  const loadClassrooms = async () => {
+    try {
+      const snapshot = await getDocs(collection(db, 'classrooms'));
+      const classroomList = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      setClassrooms(classroomList);
+    } catch (error) {
+      console.error("Fehler beim Laden:", error);
+    }
+  };
+
+  useEffect(() => {
+    if (view === 'organizer') {
+      loadClassrooms();
+    }
+  }, [view]);
+
+  const handleAnswer = async (answerIndex) => {
     setSelectedAnswer(answerIndex);
     setShowFeedback(true);
 
     const isCorrect = answerIndex === questions[currentQuestion].correct;
-    const updatedPlayers = [...players];
     
-    if (isCorrect) {
-      const playerIndex = players.findIndex(p => !p.isComputer);
-      if (playerIndex !== -1) {
-        updatedPlayers[playerIndex].position += 1;
-        updatedPlayers[playerIndex].score += 10;
-      }
-    }
+    if (roomId && playerId) {
+      // Multiplayer: Update in Firebase
+      try {
+        const roomRef = doc(db, 'rooms', roomId);
+        const roomSnap = await getDoc(roomRef);
+        const roomData = roomSnap.data();
+        
+        const updatedPlayers = roomData.players.map(p => {
+          if (p.id === playerId && isCorrect) {
+            return {
+              ...p,
+              position: p.position + 1,
+              score: p.score + 10
+            };
+          }
+          return p;
+        });
 
-    const computerPlayer = players.find(p => p.isComputer);
-    if (computerPlayer) {
-      let computerCorrectChance = 0.7;
-      if (difficulty === 'leicht') computerCorrectChance = 0.5;
-      if (difficulty === 'schwer') computerCorrectChance = 0.85;
+        await updateDoc(roomRef, {
+          players: updatedPlayers
+        });
+      } catch (error) {
+        console.error("Fehler beim Update:", error);
+      }
+    } else {
+      // Einzelspieler: Lokal
+      const updatedPlayers = [...players];
       
-      const computerIsCorrect = Math.random() < computerCorrectChance;
-      if (computerIsCorrect) {
-        const computerIndex = players.findIndex(p => p.isComputer);
-        if (computerIndex !== -1) {
-          updatedPlayers[computerIndex].position += 1;
-          updatedPlayers[computerIndex].score += 10;
+      if (isCorrect) {
+        const playerIndex = players.findIndex(p => !p.isComputer);
+        if (playerIndex !== -1) {
+          updatedPlayers[playerIndex].position += 1;
+          updatedPlayers[playerIndex].score += 10;
         }
       }
+
+      const computerPlayer = players.find(p => p.isComputer);
+      if (computerPlayer) {
+        let computerCorrectChance = 0.7;
+        if (difficulty === 'leicht') computerCorrectChance = 0.5;
+        if (difficulty === 'schwer') computerCorrectChance = 0.85;
+        
+        const computerIsCorrect = Math.random() < computerCorrectChance;
+        if (computerIsCorrect) {
+          const computerIndex = players.findIndex(p => p.isComputer);
+          if (computerIndex !== -1) {
+            updatedPlayers[computerIndex].position += 1;
+            updatedPlayers[computerIndex].score += 10;
+          }
+        }
+      }
+
+      setPlayers(updatedPlayers);
     }
 
-    setPlayers(updatedPlayers);
-
-    setTimeout(() => {
+    setTimeout(async () => {
       setShowFeedback(false);
       setSelectedAnswer(null);
       
       if (currentQuestion < questions.length - 1) {
-        setCurrentQuestion(currentQuestion + 1);
+        const nextQuestion = currentQuestion + 1;
+        
+        if (roomId && userRole === 'host') {
+          await updateDoc(doc(db, 'rooms', roomId), {
+            currentQuestion: nextQuestion
+          });
+        } else if (!roomId) {
+          setCurrentQuestion(nextQuestion);
+        }
       } else {
         setGameFinished(true);
         setView('results');
+        
+        if (roomId) {
+          await updateDoc(doc(db, 'rooms', roomId), {
+            status: 'finished'
+          });
+        }
       }
     }, 1500);
   };
@@ -232,6 +370,8 @@ ANTWORTE NUR MIT DEM JSON-OBJEKT, OHNE ZUSÄTZLICHEN TEXT!`
     setView('home');
     setUserRole(null);
     setRoomCode('');
+    setRoomId(null);
+    setPlayerId(null);
     setPlayerName('');
     setSelectedTopic('');
     setCurrentQuestion(0);
@@ -269,7 +409,7 @@ ANTWORTE NUR MIT DEM JSON-OBJEKT, OHNE ZUSÄTZLICHEN TEXT!`
             >
               <Users className="w-16 h-16 mx-auto mb-4 text-green-600" />
               <h2 className="text-2xl font-bold text-gray-800 mb-2">Mehrspieler</h2>
-              <p className="text-gray-600">Mit Freunden spielen</p>
+              <p className="text-gray-600">Online mit Freunden spielen</p>
             </button>
 
             <button
@@ -384,7 +524,7 @@ ANTWORTE NUR MIT DEM JSON-OBJEKT, OHNE ZUSÄTZLICHEN TEXT!`
           <div className="text-center mb-8">
             <div className="text-6xl mb-4">👥</div>
             <h2 className="text-4xl font-bold text-gray-800 mb-2">Mehrspieler erstellen</h2>
-            <p className="text-gray-600">Erstelle ein Spiel und lade deine Freunde ein!</p>
+            <p className="text-gray-600">Erstelle ein Online-Spiel!</p>
           </div>
 
           <div className="space-y-6">
@@ -473,7 +613,7 @@ ANTWORTE NUR MIT DEM JSON-OBJEKT, OHNE ZUSÄTZLICHEN TEXT!`
           <div className="text-center mb-8">
             <div className="text-6xl mb-4">🔗</div>
             <h2 className="text-3xl font-bold text-gray-800 mb-2">Raum beitreten</h2>
-            <p className="text-gray-600">Gib den Code ein, den dir dein Freund gegeben hat</p>
+            <p className="text-gray-600">Gib den Code ein</p>
           </div>
 
           <div className="space-y-4">
@@ -541,16 +681,19 @@ ANTWORTE NUR MIT DEM JSON-OBJEKT, OHNE ZUSÄTZLICHEN TEXT!`
 
           {userRole === 'host' && (
             <button
-              onClick={() => {
-                setGameStarted(true);
-                setView('game');
-              }}
+              onClick={startMultiplayerGame}
               disabled={players.length < 1}
               className="w-full bg-gradient-to-r from-green-500 to-emerald-600 text-white py-4 rounded-xl font-bold text-xl hover:from-green-600 hover:to-emerald-700 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed transition-all shadow-lg"
             >
               <Play className="inline mr-2" size={24} />
               Spiel starten
             </button>
+          )}
+          
+          {userRole !== 'host' && (
+            <div className="text-center text-gray-600">
+              <p>Warte bis der Host das Spiel startet...</p>
+            </div>
           )}
         </div>
       </div>
@@ -570,7 +713,7 @@ ANTWORTE NUR MIT DEM JSON-OBJEKT, OHNE ZUSÄTZLICHEN TEXT!`
             <div className="flex items-center justify-between mb-8">
               <div>
                 <h1 className="text-4xl font-bold text-gray-800 mb-2">Lernorganisator</h1>
-                <p className="text-gray-600">Verwalte Klassenräume und erstelle KI-generierte Quizze</p>
+                <p className="text-gray-600">Verwalte Klassenräume (in der Cloud gespeichert)</p>
               </div>
               <BookOpen className="w-16 h-16 text-purple-600" />
             </div>
@@ -603,8 +746,7 @@ ANTWORTE NUR MIT DEM JSON-OBJEKT, OHNE ZUSÄTZLICHEN TEXT!`
                   {classrooms.map((classroom) => (
                     <div
                       key={classroom.id}
-                      onClick={() => setCurrentClassroom(classroom)}
-                      className="bg-white border-2 border-gray-200 rounded-xl p-6 hover:border-purple-500 cursor-pointer transition-all"
+                      className="bg-white border-2 border-gray-200 rounded-xl p-6 hover:border-purple-500 transition-all"
                     >
                       <div className="flex justify-between items-start mb-4">
                         <div>
@@ -612,13 +754,10 @@ ANTWORTE NUR MIT DEM JSON-OBJEKT, OHNE ZUSÄTZLICHEN TEXT!`
                           <p className="text-sm text-gray-600">Code: {classroom.code}</p>
                         </div>
                         <div className="text-right">
-                          <p className="text-sm text-gray-600">{classroom.students.length} Schüler</p>
-                          <p className="text-sm text-gray-600">{classroom.questions.length} Fragen</p>
+                          <p className="text-sm text-gray-600">{classroom.students?.length || 0} Schüler</p>
+                          <p className="text-sm text-gray-600">{classroom.questions?.length || 0} Fragen</p>
                         </div>
                       </div>
-                      <button className="w-full bg-purple-100 text-purple-700 py-2 rounded-lg font-semibold hover:bg-purple-200 transition-colors">
-                        Verwalten
-                      </button>
                     </div>
                   ))}
                 </div>
@@ -629,129 +768,9 @@ ANTWORTE NUR MIT DEM JSON-OBJEKT, OHNE ZUSÄTZLICHEN TEXT!`
               <div className="text-center py-12 text-gray-500">
                 <BookOpen className="w-20 h-20 mx-auto mb-4 opacity-50" />
                 <p className="text-lg">Noch keine Klassenräume erstellt</p>
-                <p>Erstelle deinen ersten Klassenraum oben!</p>
               </div>
             )}
           </div>
-
-          {currentClassroom && (
-            <div className="bg-white rounded-2xl shadow-2xl p-8">
-              <div className="flex justify-between items-center mb-6">
-                <div>
-                  <h2 className="text-3xl font-bold text-gray-800">{currentClassroom.name}</h2>
-                  <p className="text-gray-600">Code: {currentClassroom.code}</p>
-                </div>
-                <button
-                  onClick={() => setCurrentClassroom(null)}
-                  className="text-gray-500 hover:text-gray-700"
-                >
-                  <X size={24} />
-                </button>
-              </div>
-
-              <div className="bg-gradient-to-r from-yellow-50 to-orange-50 rounded-xl p-6 mb-6">
-                <h3 className="text-xl font-bold text-gray-800 mb-4 flex items-center">
-                  <Sparkles className="mr-2 text-yellow-500" size={24} />
-                  KI-Fragengenerator
-                </h3>
-                
-                <div className="grid md:grid-cols-2 gap-4 mb-4">
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Thema:</label>
-                    <input
-                      type="text"
-                      value={selectedTopic}
-                      onChange={(e) => setSelectedTopic(e.target.value)}
-                      placeholder="z.B. Bruchrechnen, Photosynthese..."
-                      className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-yellow-500 focus:outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Schwierigkeit:</label>
-                    <select
-                      value={difficulty}
-                      onChange={(e) => setDifficulty(e.target.value)}
-                      className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-yellow-500 focus:outline-none"
-                    >
-                      <option value="leicht">Leicht</option>
-                      <option value="mittel">Mittel</option>
-                      <option value="schwer">Schwer</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Anzahl:</label>
-                    <select
-                      value={questionCount}
-                      onChange={(e) => setQuestionCount(Number(e.target.value))}
-                      className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-yellow-500 focus:outline-none"
-                    >
-                      <option value={5}>5 Fragen</option>
-                      <option value={10}>10 Fragen</option>
-                      <option value={15}>15 Fragen</option>
-                      <option value={20}>20 Fragen</option>
-                    </select>
-                  </div>
-                </div>
-
-                <button
-                  onClick={async () => {
-                    const success = await generateQuestionsWithAI();
-                    if (success) {
-                      const updated = classrooms.map(c => 
-                        c.id === currentClassroom.id 
-                          ? {...c, questions: [...c.questions, ...questions]}
-                          : c
-                      );
-                      setClassrooms(updated);
-                      setCurrentClassroom({...currentClassroom, questions: [...currentClassroom.questions, ...questions]});
-                      alert(`${questions.length} Fragen wurden erfolgreich hinzugefügt!`);
-                    }
-                  }}
-                  disabled={!selectedTopic || isGenerating}
-                  className="w-full bg-gradient-to-r from-yellow-500 to-orange-500 text-white py-3 rounded-lg font-bold hover:from-yellow-600 hover:to-orange-600 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed transition-all"
-                >
-                  {isGenerating ? (
-                    <>
-                      <Sparkles className="inline mr-2 animate-spin" size={20} />
-                      KI generiert Fragen...
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="inline mr-2" size={20} />
-                      Fragen generieren
-                    </>
-                  )}
-                </button>
-              </div>
-
-              {currentClassroom.questions.length > 0 && (
-                <div>
-                  <h3 className="text-xl font-bold text-gray-800 mb-4">
-                    Fragenkatalog ({currentClassroom.questions.length})
-                  </h3>
-                  <div className="space-y-3 max-h-96 overflow-y-auto">
-                    {currentClassroom.questions.map((q, idx) => (
-                      <div key={idx} className="bg-gray-50 rounded-lg p-4">
-                        <p className="font-semibold text-gray-800 mb-2">{idx + 1}. {q.question}</p>
-                        <div className="grid grid-cols-2 gap-2 text-sm">
-                          {q.answers.map((a, aIdx) => (
-                            <div
-                              key={aIdx}
-                              className={`px-3 py-1 rounded ${
-                                aIdx === q.correct ? 'bg-green-100 text-green-700 font-semibold' : 'bg-white text-gray-600'
-                              }`}
-                            >
-                              {a}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
         </div>
       </div>
     );
@@ -769,7 +788,12 @@ ANTWORTE NUR MIT DEM JSON-OBJEKT, OHNE ZUSÄTZLICHEN TEXT!`
               <h2 className="text-2xl font-bold text-gray-800">
                 Frage {currentQuestion + 1} / {questions.length}
               </h2>
-              {players.length > 0 && (
+              {players.length > 0 && playerId && (
+                <div className="text-lg font-semibold text-purple-600">
+                  Deine Punkte: {players.find(p => p.id === playerId)?.score || 0}
+                </div>
+              )}
+              {players.length > 0 && !playerId && (
                 <div className="text-lg font-semibold text-purple-600">
                   Deine Punkte: {players.find(p => !p.isComputer)?.score || 0}
                 </div>
@@ -811,10 +835,10 @@ ANTWORTE NUR MIT DEM JSON-OBJEKT, OHNE ZUSÄTZLICHEN TEXT!`
 
           <div className="bg-white rounded-2xl shadow-2xl p-8">
             <h3 className="text-3xl font-bold text-gray-800 mb-8 text-center">
-              {questions[currentQuestion].question}
+              {questions[currentQuestion]?.question}
             </h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {questions[currentQuestion].answers.map((answer, index) => {
+              {questions[currentQuestion]?.answers.map((answer, index) => {
                 const isSelected = selectedAnswer === index;
                 const isCorrect = index === questions[currentQuestion].correct;
                 const showResult = showFeedback && isSelected;
