@@ -37,68 +37,36 @@ const RobotRaceGame = () => {
   };
 
   // ChatGPT API statt Claude
-  const generateQuestionsWithAI = async () => {
-    setIsGenerating(true);
-    try {
-      const response = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": "Bearer DEIN_OPENAI_API_KEY" // Hier API Key einfügen!
-        },
-        body: JSON.stringify({
-          model: "gpt-4",
-          messages: [
-            {
-              role: "system",
-              content: "Du bist ein Lehrer der Quiz-Fragen erstellt. Antworte NUR mit einem JSON-Objekt, ohne zusätzlichen Text."
-            },
-            { 
-              role: "user", 
-              content: `Erstelle ${questionCount} Quiz-Fragen zum Thema "${selectedTopic}" mit Schwierigkeitsgrad "${difficulty}".
+ const generateQuestionsWithAI = async () => {
+  setIsGenerating(true);
+  try {
+    const response = await fetch("https://runrobrun.vercel.app/api/generate-questions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        topic: selectedTopic,
+        difficulty: difficulty,
+        questionCount: questionCount
+      })
+    });
 
-Format (genau so):
-{
-  "questions": [
-    {
-      "question": "Fragentext",
-      "answers": ["Antwort 1", "Antwort 2", "Antwort 3", "Antwort 4"],
-      "correct": 0
+    if (!response.ok) {
+      throw new Error(`Backend Error: ${response.status}`);
     }
-  ]
-}
 
-Regeln:
-- Genau ${questionCount} Fragen
-- Jede Frage hat 4 Antworten
-- "correct" ist der Index (0-3)
-- Altersgerecht
-- Schwierigkeit: ${difficulty}
-
-Antworte NUR mit dem JSON-Objekt!`
-            }
-          ],
-          temperature: 0.7,
-          max_tokens: 2000
-        })
-      });
-
-      const data = await response.json();
-      let responseText = data.choices[0].message.content;
-      
-      responseText = responseText.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-      
-      const parsedData = JSON.parse(responseText);
-      setQuestions(parsedData.questions);
-      setIsGenerating(false);
-      return true;
-    } catch (error) {
-      console.error("Fehler beim Generieren:", error);
-      setIsGenerating(false);
-      alert("Fehler beim Generieren der Fragen. Prüfe deinen API Key!");
-      return false;
-    }
-  };
+    const data = await response.json();
+    setQuestions(data.questions);
+    setIsGenerating(false);
+    return true;
+  } catch (error) {
+    console.error("Fehler beim Generieren:", error);
+    setIsGenerating(false);
+    alert("Fehler beim Generieren der Fragen: " + error.message);
+    return false;
+  }
+};
 
   const startSinglePlayer = async () => {
     if (!selectedTopic) {
