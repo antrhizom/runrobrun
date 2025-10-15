@@ -36,44 +36,43 @@ const RobotRaceGame = () => {
     return Math.random().toString(36).substring(2, 8).toUpperCase();
   };
 
-  // ChatGPT API statt Claude
- const generateQuestionsWithAI = async () => {
-  setIsGenerating(true);
-  try {
-    const response = await fetch("https://runrobrun.vercel.app/api/generate-questions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        topic: selectedTopic,
-        difficulty: difficulty,
-        questionCount: questionCount
-      })
-    });
+  const generateQuestionsWithAI = async () => {
+    setIsGenerating(true);
+    try {
+      const response = await fetch("https://runrobrun.vercel.app/api/generate-questions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          topic: selectedTopic,
+          difficulty: difficulty,
+          questionCount: questionCount
+        })
+      });
 
-    if (!response.ok) {
-      throw new Error(`Backend Error: ${response.status}`);
+      if (!response.ok) {
+        throw new Error(`Backend Error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      setQuestions(data.questions);
+      setIsGenerating(false);
+      return data.questions;
+    } catch (error) {
+      console.error("Fehler beim Generieren:", error);
+      setIsGenerating(false);
+      alert("Fehler beim Generieren der Fragen: " + error.message);
+      return null;
     }
-
-    const data = await response.json();
-    setQuestions(data.questions);
-    setIsGenerating(false);
-    return data.questions;  // ← Gib die Fragen zurück!
-  } catch (error) {
-    console.error("Fehler beim Generieren:", error);
-    setIsGenerating(false);
-    alert("Fehler beim Generieren der Fragen: " + error.message);
-    return null;
-  }
-};
+  };
 
   const startSinglePlayer = async () => {
     if (!selectedTopic) {
       alert("Bitte wähle ein Thema!");
       return;
     }
-    const success = await generateQuestionsWithAI();
+    const generatedQuestions = await generateQuestionsWithAI();
     if (generatedQuestions) {
       setPlayerName("Du");
       setPlayers([
@@ -102,30 +101,30 @@ const RobotRaceGame = () => {
   };
 
   const createMultiplayerRoom = async () => {
-  if (!selectedTopic || !playerName) {
-    alert("Bitte fülle alle Felder aus!");
-    return;
-  }
-  
-  console.log('🔵 Starte Fragenerstellung...');
-  const generatedQuestions = await generateQuestionsWithAI();
-  
-  console.log('🔵 Generierte Fragen:', generatedQuestions);
-  console.log('🔵 Anzahl Fragen:', generatedQuestions?.length);
-  
-  if (generatedQuestions) {
-    const code = generateRoomCode();
-    const newPlayerId = Date.now().toString();
+    if (!selectedTopic || !playerName) {
+      alert("Bitte fülle alle Felder aus!");
+      return;
+    }
     
-    console.log('🔵 Speichere in Firebase mit', generatedQuestions.length, 'Fragen');
+    console.log('🔵 Starte Fragenerstellung...');
+    const generatedQuestions = await generateQuestionsWithAI();
     
-    try {
-      const roomRef = await addDoc(collection(db, 'rooms'), {
-        code: code,
-        topic: selectedTopic,
-        difficulty: difficulty,
-        questionCount: questionCount,
-        questions: generatedQuestions,  // ← Prüfen wir das!
+    console.log('🔵 Generierte Fragen:', generatedQuestions);
+    console.log('🔵 Anzahl Fragen:', generatedQuestions?.length);
+    
+    if (generatedQuestions) {
+      const code = generateRoomCode();
+      const newPlayerId = Date.now().toString();
+      
+      console.log('🔵 Speichere in Firebase mit', generatedQuestions.length, 'Fragen');
+      
+      try {
+        const roomRef = await addDoc(collection(db, 'rooms'), {
+          code: code,
+          topic: selectedTopic,
+          difficulty: difficulty,
+          questionCount: questionCount,
+          questions: generatedQuestions,
           players: [{
             id: newPlayerId,
             name: playerName,
@@ -203,41 +202,37 @@ const RobotRaceGame = () => {
     }
   };
 
-  // Echtzeit-Listener für Multiplayer-Raum
- 
   useEffect(() => {
-  if (!roomId) return;
+    if (!roomId) return;
 
-  const unsubscribe = onSnapshot(doc(db, 'rooms', roomId), (doc) => {
-    if (doc.exists()) {
-      const data = doc.data();
-      setPlayers(data.players || []);
-      
-      // Lade Fragen sofort!
-      if (data.questions && data.questions.length > 0) {
-        setQuestions(data.questions);
+    const unsubscribe = onSnapshot(doc(db, 'rooms', roomId), (doc) => {
+      if (doc.exists()) {
+        const data = doc.data();
+        setPlayers(data.players || []);
+        
+        if (data.questions && data.questions.length > 0) {
+          setQuestions(data.questions);
+        }
+        
+        if (data.gameStarted && !gameStarted) {
+          setGameStarted(true);
+          setCurrentQuestion(data.currentQuestion || 0);
+          setView('game');
+        }
+        
+        if (data.gameFinished && !gameFinished) {
+          setGameFinished(true);
+          setView('results');
+        }
+        
+        if (data.currentQuestion !== undefined) {
+          setCurrentQuestion(data.currentQuestion);
+        }
       }
-      
-      if (data.gameStarted && !gameStarted) {
-        setGameStarted(true);
-        setCurrentQuestion(data.currentQuestion || 0);
-        setView('game');
-      }
-      
-      // NEU: Wenn Spiel beendet, gehe zu Results
-      if (data.gameFinished && !gameFinished) {
-        setGameFinished(true);
-        setView('results');
-      }
-      
-      if (data.currentQuestion !== undefined) {
-        setCurrentQuestion(data.currentQuestion);
-      }
-    }
-  });
+    });
 
-  return () => unsubscribe();
-}, [roomId, gameStarted, gameFinished]);  // ← gameFinished hinzufügen!
+    return () => unsubscribe();
+  }, [roomId]);
 
   const startMultiplayerGame = async () => {
     if (userRole !== 'host') return;
@@ -298,16 +293,15 @@ const RobotRaceGame = () => {
   }, [view]);
 
   const handleAnswer = async (answerIndex) => {
-     // Verhindere mehrfaches Klicken
-  if (showFeedback || selectedAnswer !== null) {
-    return; // Tue nichts, wenn bereits geantwortet
-  }
+    if (showFeedback || selectedAnswer !== null) {
+      return;
+    }
+    
     setSelectedAnswer(answerIndex);
     setShowFeedback(true);
 
     const isCorrect = answerIndex === questions[currentQuestion].correct;
     
-    // Speichere Antwort in Historie
     const answerRecord = {
       question: questions[currentQuestion].question,
       answers: questions[currentQuestion].answers,
@@ -318,7 +312,6 @@ const RobotRaceGame = () => {
     setAnswerHistory([...answerHistory, answerRecord]);
     
     if (roomId && playerId) {
-      // Multiplayer: Update in Firebase
       try {
         const roomRef = doc(db, 'rooms', roomId);
         const roomSnap = await getDoc(roomRef);
@@ -342,7 +335,6 @@ const RobotRaceGame = () => {
         console.error("Fehler beim Update:", error);
       }
     } else {
-      // Einzelspieler: Lokal
       const updatedPlayers = [...players];
       
       if (isCorrect) {
@@ -373,33 +365,33 @@ const RobotRaceGame = () => {
     }
 
     setTimeout(async () => {
-  setShowFeedback(false);
-  setSelectedAnswer(null);
-  
-  if (currentQuestion < questions.length - 1) {
-    const nextQuestion = currentQuestion + 1;
-    
-    if (roomId && userRole === 'host') {
-      await updateDoc(doc(db, 'rooms', roomId), {
-        currentQuestion: nextQuestion
-      });
-    } else if (!roomId) {
-      setCurrentQuestion(nextQuestion);
-    }
-  } else {
-    setGameFinished(true);
-    
-    if (roomId) {
-      // WICHTIG: Speichere status für ALLE Spieler
-      await updateDoc(doc(db, 'rooms', roomId), {
-        status: 'finished',
-        gameFinished: true  // ← NEU!
-      });
-    } else {
-      setView('results');
-    }
-  }
-}, 1500);
+      setShowFeedback(false);
+      setSelectedAnswer(null);
+      
+      if (currentQuestion < questions.length - 1) {
+        const nextQuestion = currentQuestion + 1;
+        
+        if (roomId && userRole === 'host') {
+          await updateDoc(doc(db, 'rooms', roomId), {
+            currentQuestion: nextQuestion
+          });
+        } else if (!roomId) {
+          setCurrentQuestion(nextQuestion);
+        }
+      } else {
+        setGameFinished(true);
+        
+        if (roomId) {
+          await updateDoc(doc(db, 'rooms', roomId), {
+            status: 'finished',
+            gameFinished: true
+          });
+        } else {
+          setView('results');
+        }
+      }
+    }, 1500);
+  };
 
   const resetGame = () => {
     setView('home');
@@ -416,6 +408,7 @@ const RobotRaceGame = () => {
     setSelectedAnswer(null);
     setShowFeedback(false);
     setQuestions([]);
+    setAnswerHistory([]);
   };
 
   if (view === 'home') {
@@ -717,24 +710,19 @@ const RobotRaceGame = () => {
           {userRole === 'host' && (
             <button
               onClick={startMultiplayerGame}
-              disabled={players.length < 1}
+              disabled={players.length < 2}
               className="w-full bg-gradient-to-r from-green-500 to-emerald-600 text-white py-4 rounded-xl font-bold text-xl hover:from-green-600 hover:to-emerald-700 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed transition-all shadow-lg"
             >
               <Play className="inline mr-2" size={24} />
-              Spiel starten
+              Spiel starten {players.length < 2 && `(${2 - players.length} Spieler ${players.length === 1 ? 'fehlt' : 'fehlen'} noch)`}
             </button>
           )}
           
-          {userRole === 'host' && (
-  <button
-    onClick={startMultiplayerGame}
-    disabled={players.length < 2}  // ← Ändere von < 1 zu < 2
-    className="w-full bg-gradient-to-r from-green-500 to-emerald-600 text-white py-4 rounded-xl font-bold text-xl hover:from-green-600 hover:to-emerald-700 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed transition-all shadow-lg"
-  >
-    <Play className="inline mr-2" size={24} />
-    Spiel starten {players.length < 2 && `(${2 - players.length} Spieler fehlt noch)`}
-  </button>
-)}
+          {userRole !== 'host' && (
+            <div className="text-center text-gray-600">
+              <p>Warte bis der Host das Spiel startet...</p>
+            </div>
+          )}
         </div>
       </div>
     );
