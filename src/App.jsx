@@ -59,12 +59,12 @@ const RobotRaceGame = () => {
     const data = await response.json();
     setQuestions(data.questions);
     setIsGenerating(false);
-    return true;
+    return data.questions;  // ← Gib die Fragen zurück!
   } catch (error) {
     console.error("Fehler beim Generieren:", error);
     setIsGenerating(false);
     alert("Fehler beim Generieren der Fragen: " + error.message);
-    return false;
+    return null;
   }
 };
 
@@ -74,7 +74,7 @@ const RobotRaceGame = () => {
       return;
     }
     const success = await generateQuestionsWithAI();
-    if (success) {
+    if (generatedQuestions) {
       setPlayerName("Du");
       setPlayers([
         {
@@ -102,22 +102,30 @@ const RobotRaceGame = () => {
   };
 
   const createMultiplayerRoom = async () => {
-    if (!selectedTopic || !playerName) {
-      alert("Bitte fülle alle Felder aus!");
-      return;
-    }
-    const success = await generateQuestionsWithAI();
-    if (success) {
-      const code = generateRoomCode();
-      const newPlayerId = Date.now().toString();
-      
-      try {
-        const roomRef = await addDoc(collection(db, 'rooms'), {
-          code: code,
-          topic: selectedTopic,
-          difficulty: difficulty,
-          questionCount: questionCount,
-          questions: questions,
+  if (!selectedTopic || !playerName) {
+    alert("Bitte fülle alle Felder aus!");
+    return;
+  }
+  
+  console.log('🔵 Starte Fragenerstellung...');
+  const generatedQuestions = await generateQuestionsWithAI();
+  
+  console.log('🔵 Generierte Fragen:', generatedQuestions);
+  console.log('🔵 Anzahl Fragen:', generatedQuestions?.length);
+  
+  if (generatedQuestions) {
+    const code = generateRoomCode();
+    const newPlayerId = Date.now().toString();
+    
+    console.log('🔵 Speichere in Firebase mit', generatedQuestions.length, 'Fragen');
+    
+    try {
+      const roomRef = await addDoc(collection(db, 'rooms'), {
+        code: code,
+        topic: selectedTopic,
+        difficulty: difficulty,
+        questionCount: questionCount,
+        questions: generatedQuestions,  // ← Prüfen wir das!
           players: [{
             id: newPlayerId,
             name: playerName,
@@ -197,28 +205,32 @@ const RobotRaceGame = () => {
 
   // Echtzeit-Listener für Multiplayer-Raum
   useEffect(() => {
-    if (!roomId) return;
+  if (!roomId) return;
 
-    const unsubscribe = onSnapshot(doc(db, 'rooms', roomId), (doc) => {
-      if (doc.exists()) {
-        const data = doc.data();
-        setPlayers(data.players || []);
-        
-        if (data.gameStarted && !gameStarted) {
-          setGameStarted(true);
-          setQuestions(data.questions);
-          setCurrentQuestion(data.currentQuestion || 0);
-          setView('game');
-        }
-        
-        if (data.currentQuestion !== undefined) {
-          setCurrentQuestion(data.currentQuestion);
-        }
+  const unsubscribe = onSnapshot(doc(db, 'rooms', roomId), (doc) => {
+    if (doc.exists()) {
+      const data = doc.data();
+      setPlayers(data.players || []);
+      
+      // WICHTIG: Lade Fragen sofort, wenn verfügbar!
+      if (data.questions && data.questions.length > 0) {
+        setQuestions(data.questions);
       }
-    });
+      
+      if (data.gameStarted && !gameStarted) {
+        setGameStarted(true);
+        setCurrentQuestion(data.currentQuestion || 0);
+        setView('game');
+      }
+      
+      if (data.currentQuestion !== undefined) {
+        setCurrentQuestion(data.currentQuestion);
+      }
+    }
+  });
 
-    return () => unsubscribe();
-  }, [roomId]);
+  return () => unsubscribe();
+}, [roomId]);
 
   const startMultiplayerGame = async () => {
     if (userRole !== 'host') return;
@@ -279,6 +291,10 @@ const RobotRaceGame = () => {
   }, [view]);
 
   const handleAnswer = async (answerIndex) => {
+     // Verhindere mehrfaches Klicken
+  if (showFeedback || selectedAnswer !== null) {
+    return; // Tue nichts, wenn bereits geantwortet
+  }
     setSelectedAnswer(answerIndex);
     setShowFeedback(true);
 
