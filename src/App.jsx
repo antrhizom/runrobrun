@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Trophy, Play, Users, User, Plus, X, LogIn, Settings, Sparkles, BookOpen, ArrowLeft } from 'lucide-react';
 import { db } from './firebase';
-import { collection, addDoc, doc, getDoc, setDoc, updateDoc, onSnapshot, query, where, deleteDoc } from 'firebase/firestore';
+import { collection, addDoc, doc, getDoc, getDocs, setDoc, updateDoc, onSnapshot, query, where, deleteDoc } from 'firebase/firestore';
 
 const RobotRaceGame = () => {
   const [view, setView] = useState('home');
@@ -27,6 +27,7 @@ const RobotRaceGame = () => {
   const [gameFinished, setGameFinished] = useState(false);
   const [selectedAnswer, setSelectedAnswer] = useState(null);
   const [showFeedback, setShowFeedback] = useState(false);
+  const [answerHistory, setAnswerHistory] = useState([]);
 
   const robots = ['🤖', '🦾', '🦿', '🛸', '👾', '🚀'];
   const colors = ['bg-blue-500', 'bg-purple-500', 'bg-pink-500', 'bg-green-500', 'bg-yellow-500', 'bg-red-500'];
@@ -37,36 +38,67 @@ const RobotRaceGame = () => {
 
   // ChatGPT API statt Claude
   const generateQuestionsWithAI = async () => {
-  setIsGenerating(true);
-  try {
-    // Rufe unsere sichere API-Route auf!
-    const response = await fetch("/api/generate-questions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        topic: selectedTopic,
-        difficulty: difficulty,
-        questionCount: questionCount
-      })
-    });
+    setIsGenerating(true);
+    try {
+      const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer DEIN_OPENAI_API_KEY" // Hier API Key einfügen!
+        },
+        body: JSON.stringify({
+          model: "gpt-4",
+          messages: [
+            {
+              role: "system",
+              content: "Du bist ein Lehrer der Quiz-Fragen erstellt. Antworte NUR mit einem JSON-Objekt, ohne zusätzlichen Text."
+            },
+            { 
+              role: "user", 
+              content: `Erstelle ${questionCount} Quiz-Fragen zum Thema "${selectedTopic}" mit Schwierigkeitsgrad "${difficulty}".
 
-    if (!response.ok) {
-      throw new Error('API request failed');
+Format (genau so):
+{
+  "questions": [
+    {
+      "question": "Fragentext",
+      "answers": ["Antwort 1", "Antwort 2", "Antwort 3", "Antwort 4"],
+      "correct": 0
     }
+  ]
+}
 
-    const data = await response.json();
-    setQuestions(data.questions);
-    setIsGenerating(false);
-    return true;
-  } catch (error) {
-    console.error("Fehler beim Generieren:", error);
-    setIsGenerating(false);
-    alert("Fehler beim Generieren der Fragen. Bitte versuche es erneut.");
-    return false;
-  }
-};
+Regeln:
+- Genau ${questionCount} Fragen
+- Jede Frage hat 4 Antworten
+- "correct" ist der Index (0-3)
+- Altersgerecht
+- Schwierigkeit: ${difficulty}
+
+Antworte NUR mit dem JSON-Objekt!`
+            }
+          ],
+          temperature: 0.7,
+          max_tokens: 2000
+        })
+      });
+
+      const data = await response.json();
+      let responseText = data.choices[0].message.content;
+      
+      responseText = responseText.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+      
+      const parsedData = JSON.parse(responseText);
+      setQuestions(parsedData.questions);
+      setIsGenerating(false);
+      return true;
+    } catch (error) {
+      console.error("Fehler beim Generieren:", error);
+      setIsGenerating(false);
+      alert("Fehler beim Generieren der Fragen. Prüfe deinen API Key!");
+      return false;
+    }
+  };
 
   const startSinglePlayer = async () => {
     if (!selectedTopic) {
@@ -283,6 +315,16 @@ const RobotRaceGame = () => {
     setShowFeedback(true);
 
     const isCorrect = answerIndex === questions[currentQuestion].correct;
+    
+    // Speichere Antwort in Historie
+    const answerRecord = {
+      question: questions[currentQuestion].question,
+      answers: questions[currentQuestion].answers,
+      correctIndex: questions[currentQuestion].correct,
+      selectedIndex: answerIndex,
+      isCorrect: isCorrect
+    };
+    setAnswerHistory([...answerHistory, answerRecord]);
     
     if (roomId && playerId) {
       // Multiplayer: Update in Firebase
@@ -841,7 +883,8 @@ const RobotRaceGame = () => {
               {questions[currentQuestion]?.answers.map((answer, index) => {
                 const isSelected = selectedAnswer === index;
                 const isCorrect = index === questions[currentQuestion].correct;
-                const showResult = showFeedback && isSelected;
+                const showAsCorrect = showFeedback && isCorrect;
+                const showAsWrong = showFeedback && isSelected && !isCorrect;
 
                 return (
                   <button
@@ -849,14 +892,16 @@ const RobotRaceGame = () => {
                     onClick={() => !showFeedback && handleAnswer(index)}
                     disabled={showFeedback}
                     className={`p-6 rounded-xl text-lg font-semibold transition-all transform hover:scale-105 ${
-                      showResult
-                        ? isCorrect
-                          ? 'bg-green-500 text-white'
-                          : 'bg-red-500 text-white'
+                      showAsCorrect
+                        ? 'bg-green-500 text-white ring-4 ring-green-300'
+                        : showAsWrong
+                        ? 'bg-red-500 text-white'
                         : 'bg-gray-100 hover:bg-purple-100 text-gray-800'
                     } ${showFeedback ? 'cursor-not-allowed' : ''}`}
                   >
                     {answer}
+                    {showAsCorrect && <span className="ml-2">✓</span>}
+                    {showAsWrong && <span className="ml-2">✗</span>}
                   </button>
                 );
               })}
@@ -906,11 +951,77 @@ const RobotRaceGame = () => {
             ))}
           </div>
 
+          {answerHistory.length > 0 && (
+            <div className="mb-8">
+              <h2 className="text-3xl font-bold text-gray-800 mb-6 text-center">Deine Antworten</h2>
+              <div className="space-y-4">
+                {answerHistory.map((record, qIndex) => (
+                  <div key={qIndex} className="bg-white rounded-xl p-6 shadow-lg">
+                    <div className="flex items-start gap-4">
+                      <div className={`text-3xl ${record.isCorrect ? 'text-green-500' : 'text-red-500'}`}>
+                        {record.isCorrect ? '✓' : '✗'}
+                      </div>
+                      <div className="flex-1">
+                        <h3 className="text-lg font-bold text-gray-800 mb-3">
+                          Frage {qIndex + 1}: {record.question}
+                        </h3>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                          {record.answers.map((answer, aIndex) => {
+                            const isCorrectAnswer = aIndex === record.correctIndex;
+                            const wasSelected = aIndex === record.selectedIndex;
+                            
+                            return (
+                              <div
+                                key={aIndex}
+                                className={`p-3 rounded-lg text-sm ${
+                                  isCorrectAnswer
+                                    ? 'bg-green-100 border-2 border-green-500 text-green-800 font-semibold'
+                                    : wasSelected && !isCorrectAnswer
+                                    ? 'bg-red-100 border-2 border-red-500 text-red-800'
+                                    : 'bg-gray-50 text-gray-600'
+                                }`}
+                              >
+                                {answer}
+                                {isCorrectAnswer && <span className="ml-2">✓ Richtig</span>}
+                                {wasSelected && !isCorrectAnswer && <span className="ml-2">✗ Deine Antwort</span>}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              
+              <div className="mt-6 bg-gradient-to-r from-blue-50 to-purple-50 rounded-xl p-6">
+                <div className="grid grid-cols-3 gap-4 text-center">
+                  <div>
+                    <p className="text-3xl font-bold text-gray-800">{answerHistory.length}</p>
+                    <p className="text-sm text-gray-600">Gesamt</p>
+                  </div>
+                  <div>
+                    <p className="text-3xl font-bold text-green-600">
+                      {answerHistory.filter(a => a.isCorrect).length}
+                    </p>
+                    <p className="text-sm text-gray-600">Richtig</p>
+                  </div>
+                  <div>
+                    <p className="text-3xl font-bold text-red-600">
+                      {answerHistory.filter(a => !a.isCorrect).length}
+                    </p>
+                    <p className="text-sm text-gray-600">Falsch</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           <button
             onClick={resetGame}
             className="w-full bg-gradient-to-r from-purple-600 to-pink-600 text-white py-4 rounded-xl font-bold text-xl hover:from-purple-700 hover:to-pink-700 transition-all"
           >
-            Zurück zum Start
+            Neues Spiel starten
           </button>
         </div>
       </div>
