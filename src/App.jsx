@@ -33,7 +33,8 @@ const RobotRaceGame = () => {
   const [selectedAnswer, setSelectedAnswer] = useState(null);
   const [showFeedback, setShowFeedback] = useState(false);
   const [answerHistory, setAnswerHistory] = useState([]);
-  
+  const [isEvaluating, setIsEvaluating] = useState(false); // NEU: Das Schloss
+  // ... all deine anderen states
   // NEU: State, um zu verfolgen, ob der Spieler für die aktuelle Runde geantwortet hat
   const [playerHasAnswered, setPlayerHasAnswered] = useState(false);
   
@@ -225,49 +226,66 @@ const RobotRaceGame = () => {
       return;
     }
     
-    const generatedQuestions = await generateQuestionsWithAI();
+    setIsGenerating(true); // Zeige einen Ladezustand an
+    const code = generateRoomCode();
+    const newPlayerId = Date.now().toString();
+    const randomName = generateRandomName();
     
-    if (generatedQuestions) {
-      const code = generateRoomCode();
-      const newPlayerId = Date.now().toString();
-      const randomName = generateRandomName();
-      
-      try {
-        const roomRef = await addDoc(collection(db, 'rooms'), {
-          code: code,
-          topic: selectedTopic,
-          difficulty: difficulty,
-          questionCount: questionCount,
+    try {
+      // Schritt 1: Raum SOFORT erstellen, aber ohne Fragen
+      const roomRef = await addDoc(collection(db, 'rooms'), {
+        code: code,
+        topic: selectedTopic,
+        difficulty: difficulty,
+        questionCount: questionCount,
+        questions: [], // Fragen sind anfangs leer
+        players: [{
+          id: newPlayerId,
+          name: randomName,
+          position: 0,
+          score: 0,
+          robot: robots[0],
+          color: colors[0]
+        }],
+        status: 'generating_questions', // NEUER Status
+        currentQuestion: 0,
+        currentQuestionAnswers: {},
+        gameStarted: false,
+        createdAt: new Date().toISOString(),
+        hostId: newPlayerId,
+        isClassroom: false
+      });
+
+      // Schritt 2: Spieler SOFORT in den Warteraum schicken
+      setPlayerName(randomName);
+      setRoomCode(code);
+      setRoomId(roomRef.id);
+      setPlayerId(newPlayerId);
+      setUserRole('host');
+      setGameMode('room');
+      setView('player-wait');
+      setIsGenerating(false); // Ladezustand beenden
+
+      // Schritt 3 & 4: Fragen im Hintergrund generieren und den Raum aktualisieren
+      const generatedQuestions = await generateQuestionsWithAI();
+      if (generatedQuestions) {
+        await updateDoc(doc(db, 'rooms', roomRef.id), {
           questions: generatedQuestions,
-          players: [{
-            id: newPlayerId,
-            name: randomName,
-            position: 0,
-            score: 0,
-            robot: robots[0],
-            color: colors[0]
-          }],
-          status: 'waiting',
-          currentQuestion: 0,
-          // NEU: Feld zum Sammeln der Antworten für die aktuelle Frage
-          currentQuestionAnswers: {},
-          gameStarted: false,
-          createdAt: new Date().toISOString(),
-          hostId: newPlayerId,
-          isClassroom: false
+          status: 'waiting' // Jetzt ist der Raum bereit zum Starten
         });
-        
-        setPlayerName(randomName);
-        setRoomCode(code);
-        setRoomId(roomRef.id);
-        setPlayerId(newPlayerId);
-        setUserRole('host');
-        setGameMode('room');
-        setView('player-wait');
-      } catch (error) {
-        console.error("Fehler beim Erstellen des Raums:", error);
-        alert("Fehler beim Erstellen des Raums!");
+      } else {
+        // Fehlerbehandlung: Was passiert, wenn die KI versagt?
+        await updateDoc(doc(db, 'rooms', roomRef.id), { status: 'error' });
+        alert("Fehler: Die Fragen konnten nicht erstellt werden. Bitte versuche es erneut.");
+        // Optional: Den Raum wieder löschen
+        // await deleteDoc(doc(db, 'rooms', roomRef.id));
+        resetGame();
       }
+
+    } catch (error) {
+      console.error("Fehler beim Erstellen des Raums:", error);
+      alert("Fehler beim Erstellen des Raums!");
+      setIsGenerating(false);
     }
   };
 
@@ -475,115 +493,88 @@ const RobotRaceGame = () => {
 
   // GEÄNDERT: Komplette Neugestaltung des Listeners für Multiplayer
 // GEÄNDERT: Komplette Neugestaltung des Listeners für Multiplayer
-  useEffect(() => {
+useEffect(() => {
     if (!roomId) return;
 
-    // KORREKTUR: Die onSnapshot-Funktion erhält direkt den Snapshot (hier 'docSnapshot' genannt)
     const unsubscribe = onSnapshot(doc(db, 'rooms', roomId), (docSnapshot) => {
       if (docSnapshot.exists()) {
         const data = docSnapshot.data();
-        
-        // Diese States werden für alle Spieler (Host und Clients) aktualisiert
         setPlayers(data.players || []);
-        if (data.questions && data.questions.length > 0) {
-          setQuestions(data.questions);
+        if (data.questions && data.questions.length > 0 && questions.length === 0) {
+            setQuestions(data.questions);
         }
 
-        // Spielstart-Logik
         if (data.gameStarted && !gameStarted) {
           setGameStarted(true);
           setCurrentQuestion(data.currentQuestion || 0);
           setView('game');
         }
         
-        // Spielende-Logik
         if (data.gameFinished && !gameFinished) {
           setGameFinished(true);
-          setPlayers(data.players); // Wichtig: Finale Spielerdaten für die Rangliste übernehmen
+          setPlayers(data.players);
           setView('results');
         }
         
-        // Logik für nächste Frage (wird vom Host ausgelöst)
         if (data.currentQuestion !== currentQuestion) {
           setCurrentQuestion(data.currentQuestion);
           setSelectedAnswer(null);
           setShowFeedback(false);
           setPlayerHasAnswered(false);
+          setIsEvaluating(false); // WICHTIG: Schloss für die neue Runde öffnen
         }
         
-        // HOST-Logik: Runden auswerten
-        if (userRole === 'host' && data.gameStarted && !data.gameFinished) {
+        // HOST-Logik: Nur ausführen, wenn das Schloss offen ist (!isEvaluating)
+        if (userRole === 'host' && data.gameStarted && !data.gameFinished && !isEvaluating) {
           const totalPlayers = data.players.length;
           const currentAnswers = data.currentQuestionAnswers || {};
           const answeredPlayersCount = Object.keys(currentAnswers).length;
 
-          // PRÜFUNG: Wenn alle Spieler geantwortet haben, wertet der Host aus.
           if (totalPlayers > 0 && answeredPlayersCount === totalPlayers) {
             
-            // 1. Antworten auswerten
+            setIsEvaluating(true); // WICHTIG: Schloss für diese Runde schliessen!
+
             const answers = Object.entries(currentAnswers);
             const correctAnswers = answers.filter(([, answerData]) => answerData.isCorrect);
-            
-            // 2. Schnellste richtige Antwort finden (sortieren nach Timestamp)
             correctAnswers.sort((a, b) => a[1].timestamp.toMillis() - b[1].timestamp.toMillis());
             
             let updatedPlayers = [...data.players];
             if (correctAnswers.length > 0) {
-                const winnerId = correctAnswers[0][0]; // ID des schnellsten Spielers
+                const winnerId = correctAnswers[0][0];
                 updatedPlayers = updatedPlayers.map(p => {
                     if (p.id === winnerId) {
-                        return {
-                            ...p,
-                            score: p.score + 100, // Punkte für den Schnellsten
-                            position: p.position + 1
-                        };
+                        return { ...p, score: p.score + 100, position: p.position + 1 };
                     }
                     return p;
                 });
             }
 
-            // 3. Nächste Runde oder Spielende vorbereiten
             const nextQuestionIndex = data.currentQuestion + 1;
             
-            // Kleine Verzögerung, damit die Auswertung nicht zu schnell passiert
             setTimeout(() => {
               if (nextQuestionIndex < data.questions.length) {
-                // Nächste Frage
                 updateDoc(doc(db, 'rooms', roomId), {
                   players: updatedPlayers,
                   currentQuestion: nextQuestionIndex,
-                  currentQuestionAnswers: {} // WICHTIG: Antworten für nächste Runde zurücksetzen!
+                  currentQuestionAnswers: {}
                 });
+                // Das Schloss wird durch den Wechsel der currentQuestion oben wieder geöffnet.
               } else {
-                // Spielende
                 updateDoc(doc(db, 'rooms', roomId), {
                   players: updatedPlayers,
                   status: 'finished',
                   gameFinished: true
                 });
-
-                // Aktivität für den Host speichern
-                const hostPlayer = updatedPlayers.find(p => p.id === playerId);
-                if (hostPlayer) {
-                    saveActivityToFirebase({
-                        type: gameMode || 'multiplayer',
-                        playerName: hostPlayer.name,
-                        score: hostPlayer.score,
-                        topic: data.topic,
-                        difficulty: data.difficulty,
-                        questionCount: data.questions.length,
-                        classroomCode: currentClassroom?.code || null
-                    });
-                }
               }
-            }, 1500); // 1.5 Sekunden warten, bevor die nächste Runde startet
+            }, 1500);
           }
         }
       }
     });
 
     return () => unsubscribe();
-  }, [roomId, gameStarted, gameFinished, userRole, currentQuestion]);
+  }, [roomId, gameStarted, gameFinished, userRole, currentQuestion, isEvaluating, questions.length]); // isEvaluating und questions.length hinzugefügt
+
   // GEÄNDERT: HandleAnswer Logik
   const handleAnswer = async (answerIndex) => {
     // Verhindert doppeltes Antworten
@@ -1410,26 +1401,54 @@ const RobotRaceGame = () => {
             </div>
           </div>
 
-          {userRole === 'host' && (
-            <button
-              onClick={startMultiplayerGame}
-              disabled={players.length < 2}
-              className="w-full bg-gradient-to-r from-green-500 to-emerald-600 text-white py-4 rounded-xl font-bold text-xl hover:from-green-600 hover:to-emerald-700 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed transition-all shadow-lg"
-            >
-              <Play className="inline mr-2" size={24} />
-              Spiel starten {players.length < 2 && `(${2 - players.length} Spieler ${players.length === 1 ? 'fehlt' : 'fehlen'} noch)`}
-            </button>
-          )}
+          {/* FÜR DEN HOST */}
+          {userRole === 'host' && (() => {
+            const enoughPlayers = players.length >= 2;
+            const questionsLoaded = questions.length > 0;
+            const roomIsReady = enoughPlayers && questionsLoaded;
+            
+            let buttonText = 'Spiel starten';
+            if (!enoughPlayers) {
+                buttonText = `Warte auf ${2 - players.length} weitere/n Spieler...`;
+            } else if (!questionsLoaded) {
+                buttonText = '🤖 Fragen werden erstellt...';
+            }
+
+            return (
+              <>
+                {!questionsLoaded && (
+                  <p className="text-center text-purple-700 font-semibold animate-pulse mb-4">
+                    KI generiert die Fragen... Spieler können bereits beitreten!
+                  </p>
+                )}
+                <button
+                  onClick={startMultiplayerGame}
+                  disabled={!roomIsReady}
+                  className="w-full bg-gradient-to-r from-green-500 to-emerald-600 text-white py-4 rounded-xl font-bold text-xl hover:from-green-600 hover:to-emerald-700 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed transition-all shadow-lg"
+                >
+                  <Play className="inline mr-2" size={24} />
+                  {buttonText} 
+                </button>
+              </>
+            );
+          })()}
           
+          {/* FÜR DIE ANDEREN SPIELER */}
           {userRole !== 'host' && (
             <div className="text-center text-gray-600">
-              <p>Warte bis der Host das Spiel startet...</p>
+              {questions.length === 0 ? (
+                <p className="text-purple-700 font-semibold animate-pulse">
+                  Der Host bereitet das Spiel vor, gleich geht's los!
+                </p>
+              ) : (
+                <p>Warte bis der Host das Spiel startet...</p>
+              )}
             </div>
           )}
         </div>
       </div>
     );
-  }
+  } // <--- DIESE KLAMMER HAT WAHRSCHEINLICH GEFEHLT
 
   if (view === 'organizer') {
     return (
