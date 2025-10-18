@@ -545,6 +545,7 @@ const RobotRaceGame = () => {
           setShowFeedback(false);
           setPlayerHasAnswered(false);
           setIsEvaluating(false);
+          setIsEvaluatingLocally(false);
         }
         
         // HOST-Logik: Nur wenn ich der Host bin UND das Spiel läuft
@@ -561,7 +562,7 @@ const RobotRaceGame = () => {
           });
 
           // NUR evaluieren wenn: alle Spieler geantwortet haben UND noch nicht am evaluieren
-          if (totalPlayers > 0 && answeredPlayersCount === totalPlayers && !data.isEvaluating) {
+          if (totalPlayers > 0 && answeredPlayersCount === totalPlayers && !data.isEvaluating && !isEvaluatingLocally) {
             
             console.log("🔒 Starte Evaluierung - Lock wird gesetzt");
             
