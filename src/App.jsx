@@ -663,16 +663,26 @@ const RobotRaceGame = () => {
       setPlayerHasAnswered(true);
       try {
         const roomRef = doc(db, 'rooms', roomId);
-        // GEÄNDERT: Verwende Date.now() statt serverTimestamp() für bessere Kompatibilität
-        await updateDoc(roomRef, {
-          [`currentQuestionAnswers.${playerId}`]: {
-            answerIndex: answerIndex,
-            isCorrect: isCorrect,
-            timestamp: Date.now() // Millisekunden seit 1970
-          }
+        const answerData = {
+          answerIndex: answerIndex,
+          isCorrect: isCorrect,
+          timestamp: Date.now()
+        };
+        
+        console.log("💾 Speichere Antwort:", {
+          playerId,
+          answerData,
+          roomId
         });
+        
+        await updateDoc(roomRef, {
+          [`currentQuestionAnswers.${playerId}`]: answerData
+        });
+        
+        console.log("✅ Antwort gespeichert!");
+        
       } catch (error) {
-        console.error("Fehler beim Senden der Antwort:", error);
+        console.error("❌ Fehler beim Senden der Antwort:", error);
       }
     } else {
       const updatedPlayers = [...players];
