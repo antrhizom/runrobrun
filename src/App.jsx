@@ -576,10 +576,18 @@ const RobotRaceGame = () => {
               
               // GEÄNDERT: Einfache numerische Sortierung
               correctAnswers.sort((a, b) => {
-                const timeA = a[1].timestamp || 0;
-                const timeB = b[1].timestamp || 0;
-                return timeA - timeB;
-              });
+                    // ALT:
+                    // const timeA = a[1].timestamp || 0;
+                    // const timeB = b[1].timestamp || 0;
+                    
+                    // NEU:
+                    // Wir müssen .toMillis() verwenden, um die Server-Zeitstempel zu vergleichen
+                    // Wir fügen einen Fallback hinzu, falls der Zeitstempel noch nicht vom Server gesetzt wurde
+                    const timeA = a[1].timestamp?.toMillis() || Date.now();
+                    const timeB = b[1].timestamp?.toMillis() || Date.now();
+                    
+                    return timeA - timeB;
+                  });
               
               let updatedPlayers = [...data.players];
               let roundWinner = null;
@@ -664,10 +672,13 @@ const RobotRaceGame = () => {
       try {
         const roomRef = doc(db, 'rooms', roomId);
         const answerData = {
-          answerIndex: answerIndex,
-          isCorrect: isCorrect,
-          timestamp: Date.now()
-        };
+        answerIndex: answerIndex,
+        isCorrect: isCorrect,
+        // ALT:
+        // timestamp: Date.now()
+        // NEU:
+        timestamp: serverTimestamp() 
+      };
         
         console.log("💾 Speichere Antwort:", {
           playerId,
