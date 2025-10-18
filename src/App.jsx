@@ -518,6 +518,21 @@ const RobotRaceGame = () => {
           if (data.roundWinners) {
             setRoundWinners(data.roundWinners);
           }
+          
+          // NEU: Speichere Aktivität auch im Multiplayer
+          const currentPlayer = data.players.find(p => p.id === playerId);
+          if (currentPlayer && playerId) {
+            saveActivityToFirebase({
+              type: gameMode || 'room',
+              playerName: currentPlayer.name,
+              score: currentPlayer.score,
+              topic: data.topic || selectedTopic,
+              difficulty: data.difficulty || difficulty,
+              questionCount: data.questions?.length || questions.length,
+              classroomCode: currentClassroom?.code || null
+            });
+          }
+          
           setView('results');
         }
         
