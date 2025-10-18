@@ -36,6 +36,7 @@ const RobotRaceGame = () => {
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [playerHasAnswered, setPlayerHasAnswered] = useState(false);
   const [roundWinners, setRoundWinners] = useState([]);
+  const [isEvaluatingLocally, setIsEvaluatingLocally] = useState(false); // NEU: Lokaler Lock
   
   const [dashboardData, setDashboardData] = useState([]);
 
@@ -745,6 +746,7 @@ const RobotRaceGame = () => {
     setCurrentClassroom(null);
     setPlayerHasAnswered(false);
     setRoundWinners([]);
+    setIsEvaluatingLocally(false); // NEU: Zurücksetzen
   };
 
   if (view === 'home') {
