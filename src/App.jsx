@@ -33,10 +33,9 @@ const RobotRaceGame = () => {
   const [selectedAnswer, setSelectedAnswer] = useState(null);
   const [showFeedback, setShowFeedback] = useState(false);
   const [answerHistory, setAnswerHistory] = useState([]);
-  const [isEvaluating, setIsEvaluating] = useState(false); // NEU: Das Schloss
-  // ... all deine anderen states
-  // NEU: State, um zu verfolgen, ob der Spieler für die aktuelle Runde geantwortet hat
+  const [isEvaluating, setIsEvaluating] = useState(false);
   const [playerHasAnswered, setPlayerHasAnswered] = useState(false);
+  const [roundWinners, setRoundWinners] = useState([]);
   
   const [dashboardData, setDashboardData] = useState([]);
 
@@ -226,19 +225,18 @@ const RobotRaceGame = () => {
       return;
     }
     
-    setIsGenerating(true); // Zeige einen Ladezustand an
+    setIsGenerating(true);
     const code = generateRoomCode();
     const newPlayerId = Date.now().toString();
     const randomName = generateRandomName();
     
     try {
-      // Schritt 1: Raum SOFORT erstellen, aber ohne Fragen
       const roomRef = await addDoc(collection(db, 'rooms'), {
         code: code,
         topic: selectedTopic,
         difficulty: difficulty,
         questionCount: questionCount,
-        questions: [], // Fragen sind anfangs leer
+        questions: [],
         players: [{
           id: newPlayerId,
           name: randomName,
@@ -247,16 +245,17 @@ const RobotRaceGame = () => {
           robot: robots[0],
           color: colors[0]
         }],
-        status: 'generating_questions', // NEUER Status
+        status: 'generating_questions',
         currentQuestion: 0,
         currentQuestionAnswers: {},
         gameStarted: false,
         createdAt: new Date().toISOString(),
         hostId: newPlayerId,
-        isClassroom: false
+        isClassroom: false,
+        isEvaluating: false,
+        roundWinners: []
       });
 
-      // Schritt 2: Spieler SOFORT in den Warteraum schicken
       setPlayerName(randomName);
       setRoomCode(code);
       setRoomId(roomRef.id);
@@ -264,21 +263,17 @@ const RobotRaceGame = () => {
       setUserRole('host');
       setGameMode('room');
       setView('player-wait');
-      setIsGenerating(false); // Ladezustand beenden
+      setIsGenerating(false);
 
-      // Schritt 3 & 4: Fragen im Hintergrund generieren und den Raum aktualisieren
       const generatedQuestions = await generateQuestionsWithAI();
       if (generatedQuestions) {
         await updateDoc(doc(db, 'rooms', roomRef.id), {
           questions: generatedQuestions,
-          status: 'waiting' // Jetzt ist der Raum bereit zum Starten
+          status: 'waiting'
         });
       } else {
-        // Fehlerbehandlung: Was passiert, wenn die KI versagt?
         await updateDoc(doc(db, 'rooms', roomRef.id), { status: 'error' });
         alert("Fehler: Die Fragen konnten nicht erstellt werden. Bitte versuche es erneut.");
-        // Optional: Den Raum wieder löschen
-        // await deleteDoc(doc(db, 'rooms', roomRef.id));
         resetGame();
       }
 
@@ -350,7 +345,6 @@ const RobotRaceGame = () => {
         gameStarted: true,
         status: 'playing',
         currentQuestion: 0,
-        // NEU: Antworten zurücksetzen beim Spielstart
         currentQuestionAnswers: {}
       });
     } catch (error) {
@@ -491,17 +485,25 @@ const RobotRaceGame = () => {
     }
   }, [view]);
 
-  // GEÄNDERT: Komplette Neugestaltung des Listeners für Multiplayer
-// GEÄNDERT: Komplette Neugestaltung des Listeners für Multiplayer
-useEffect(() => {
+  useEffect(() => {
     if (!roomId) return;
+
+    console.log("🔄 Listener aktiv für Room:", roomId);
 
     const unsubscribe = onSnapshot(doc(db, 'rooms', roomId), (docSnapshot) => {
       if (docSnapshot.exists()) {
         const data = docSnapshot.data();
+        console.log("📩 Firebase Update:", {
+          currentQuestion: data.currentQuestion,
+          isEvaluating: data.isEvaluating,
+          answersCount: Object.keys(data.currentQuestionAnswers || {}).length,
+          totalPlayers: data.players.length
+        });
+        
         setPlayers(data.players || []);
+        
         if (data.questions && data.questions.length > 0 && questions.length === 0) {
-            setQuestions(data.questions);
+          setQuestions(data.questions);
         }
 
         if (data.gameStarted && !gameStarted) {
@@ -513,71 +515,115 @@ useEffect(() => {
         if (data.gameFinished && !gameFinished) {
           setGameFinished(true);
           setPlayers(data.players);
+          if (data.roundWinners) {
+            setRoundWinners(data.roundWinners);
+          }
           setView('results');
         }
         
+        // WICHTIG: Prüfe ob die Frage sich geändert hat
         if (data.currentQuestion !== currentQuestion) {
+          console.log("🔄 Frage wechselt von", currentQuestion, "zu", data.currentQuestion);
           setCurrentQuestion(data.currentQuestion);
           setSelectedAnswer(null);
           setShowFeedback(false);
           setPlayerHasAnswered(false);
-          setIsEvaluating(false); // WICHTIG: Schloss für die neue Runde öffnen
+          setIsEvaluating(false);
         }
         
-        // HOST-Logik: Nur ausführen, wenn das Schloss offen ist (!isEvaluating)
-        if (userRole === 'host' && data.gameStarted && !data.gameFinished && !isEvaluating) {
+        // HOST-Logik: Nur wenn ich der Host bin UND das Spiel läuft
+        if (userRole === 'host' && data.gameStarted && !data.gameFinished) {
           const totalPlayers = data.players.length;
           const currentAnswers = data.currentQuestionAnswers || {};
           const answeredPlayersCount = Object.keys(currentAnswers).length;
 
-          if (totalPlayers > 0 && answeredPlayersCount === totalPlayers) {
-            
-            setIsEvaluating(true); // WICHTIG: Schloss für diese Runde schliessen!
+          console.log("🎮 Host-Check:", {
+            totalPlayers,
+            answeredPlayersCount,
+            isEvaluating: data.isEvaluating,
+            shouldEvaluate: totalPlayers > 0 && answeredPlayersCount === totalPlayers && !data.isEvaluating
+          });
 
-            const answers = Object.entries(currentAnswers);
-            const correctAnswers = answers.filter(([, answerData]) => answerData.isCorrect);
-            correctAnswers.sort((a, b) => a[1].timestamp.toMillis() - b[1].timestamp.toMillis());
+          // NUR evaluieren wenn: alle Spieler geantwortet haben UND noch nicht am evaluieren
+          if (totalPlayers > 0 && answeredPlayersCount === totalPlayers && !data.isEvaluating) {
             
-            let updatedPlayers = [...data.players];
-            if (correctAnswers.length > 0) {
+            console.log("🔒 Starte Evaluierung - Lock wird gesetzt");
+            
+            // WICHTIG: Sofort Lock setzen
+            updateDoc(doc(db, 'rooms', roomId), {
+              isEvaluating: true
+            }).then(() => {
+              console.log("✅ Lock gesetzt, evaluiere Antworten");
+              
+              const answers = Object.entries(currentAnswers);
+              const correctAnswers = answers.filter(([, answerData]) => answerData.isCorrect);
+              
+              // GEÄNDERT: Einfache numerische Sortierung
+              correctAnswers.sort((a, b) => {
+                const timeA = a[1].timestamp || 0;
+                const timeB = b[1].timestamp || 0;
+                return timeA - timeB;
+              });
+              
+              let updatedPlayers = [...data.players];
+              let roundWinner = null;
+              
+              if (correctAnswers.length > 0) {
                 const winnerId = correctAnswers[0][0];
+                roundWinner = winnerId;
+                console.log("🏆 Gewinner dieser Runde:", winnerId);
                 updatedPlayers = updatedPlayers.map(p => {
-                    if (p.id === winnerId) {
-                        return { ...p, score: p.score + 100, position: p.position + 1 };
-                    }
-                    return p;
-                });
-            }
-
-            const nextQuestionIndex = data.currentQuestion + 1;
-            
-            setTimeout(() => {
-              if (nextQuestionIndex < data.questions.length) {
-                updateDoc(doc(db, 'rooms', roomId), {
-                  players: updatedPlayers,
-                  currentQuestion: nextQuestionIndex,
-                  currentQuestionAnswers: {}
-                });
-                // Das Schloss wird durch den Wechsel der currentQuestion oben wieder geöffnet.
-              } else {
-                updateDoc(doc(db, 'rooms', roomId), {
-                  players: updatedPlayers,
-                  status: 'finished',
-                  gameFinished: true
+                  if (p.id === winnerId) {
+                    return { ...p, score: p.score + 100, position: p.position + 1 };
+                  }
+                  return p;
                 });
               }
-            }, 1500);
+
+              const nextQuestionIndex = data.currentQuestion + 1;
+              const existingRoundWinners = data.roundWinners || [];
+              
+              console.log("⏱️ Warte 1.5s, dann nächste Frage:", nextQuestionIndex);
+              
+              setTimeout(() => {
+                if (nextQuestionIndex < data.questions.length) {
+                  console.log("➡️ Gehe zu Frage", nextQuestionIndex);
+                  updateDoc(doc(db, 'rooms', roomId), {
+                    players: updatedPlayers,
+                    currentQuestion: nextQuestionIndex,
+                    currentQuestionAnswers: {},
+                    isEvaluating: false,
+                    roundWinners: [...existingRoundWinners, roundWinner]
+                  }).then(() => {
+                    console.log("✅ Firebase aktualisiert für Frage", nextQuestionIndex);
+                  }).catch(err => {
+                    console.error("❌ Fehler beim Update:", err);
+                  });
+                } else {
+                  console.log("🏁 Spiel beendet!");
+                  updateDoc(doc(db, 'rooms', roomId), {
+                    players: updatedPlayers,
+                    status: 'finished',
+                    gameFinished: true,
+                    roundWinners: [...existingRoundWinners, roundWinner]
+                  });
+                }
+              }, 1500);
+            }).catch(err => {
+              console.error("❌ Fehler beim Setzen des Locks:", err);
+            });
           }
         }
       }
     });
 
-    return () => unsubscribe();
-  }, [roomId, gameStarted, gameFinished, userRole, currentQuestion, isEvaluating, questions.length]); // isEvaluating und questions.length hinzugefügt
+    return () => {
+      console.log("🔴 Listener wird entfernt");
+      unsubscribe();
+    };
+  }, [roomId, gameStarted, gameFinished, userRole, currentQuestion, questions.length]);
 
-  // GEÄNDERT: HandleAnswer Logik
   const handleAnswer = async (answerIndex) => {
-    // Verhindert doppeltes Antworten
     if (showFeedback || selectedAnswer !== null || playerHasAnswered) {
       return;
     }
@@ -592,76 +638,75 @@ useEffect(() => {
       answers: questions[currentQuestion].answers,
       correctIndex: questions[currentQuestion].correct,
       selectedIndex: answerIndex,
-      isCorrect: isCorrect
+      isCorrect: isCorrect,
+      questionNumber: currentQuestion // NEU: Speichere die Fragennummer
     };
     setAnswerHistory([...answerHistory, answerRecord]);
     
-    // Multiplayer-Logik
     if (roomId && playerId) {
-      setPlayerHasAnswered(true); // Spieler hat geantwortet, UI blockieren
+      setPlayerHasAnswered(true);
       try {
         const roomRef = doc(db, 'rooms', roomId);
-        // Die Antwort des Spielers in der Datenbank speichern
+        // GEÄNDERT: Verwende Date.now() statt serverTimestamp() für bessere Kompatibilität
         await updateDoc(roomRef, {
           [`currentQuestionAnswers.${playerId}`]: {
             answerIndex: answerIndex,
             isCorrect: isCorrect,
-            timestamp: serverTimestamp() // Wichtig für die Geschwindigkeitsmessung
+            timestamp: Date.now() // Millisekunden seit 1970
           }
         });
       } catch (error) {
         console.error("Fehler beim Senden der Antwort:", error);
       }
-    } else { // Singleplayer-Logik (bleibt größtenteils gleich)
-        const updatedPlayers = [...players];
+    } else {
+      const updatedPlayers = [...players];
         
-        if (isCorrect) {
-          const playerIndex = players.findIndex(p => !p.isComputer);
-          if (playerIndex !== -1) {
-            updatedPlayers[playerIndex].position += 1;
-            updatedPlayers[playerIndex].score += 10;
-          }
+      if (isCorrect) {
+        const playerIndex = players.findIndex(p => !p.isComputer);
+        if (playerIndex !== -1) {
+          updatedPlayers[playerIndex].position += 1;
+          updatedPlayers[playerIndex].score += 10;
         }
+      }
 
-        const computerPlayer = players.find(p => p.isComputer);
-        if (computerPlayer) {
-          let computerCorrectChance = 0.7;
-          if (difficulty === 'leicht') computerCorrectChance = 0.5;
-          if (difficulty === 'schwer') computerCorrectChance = 0.85;
-          
-          const computerIsCorrect = Math.random() < computerCorrectChance;
-          if (computerIsCorrect) {
-            const computerIndex = players.findIndex(p => p.isComputer);
-            if (computerIndex !== -1) {
-              updatedPlayers[computerIndex].position += 1;
-              updatedPlayers[computerIndex].score += 10;
-            }
+      const computerPlayer = players.find(p => p.isComputer);
+      if (computerPlayer) {
+        let computerCorrectChance = 0.7;
+        if (difficulty === 'leicht') computerCorrectChance = 0.5;
+        if (difficulty === 'schwer') computerCorrectChance = 0.85;
+        
+        const computerIsCorrect = Math.random() < computerCorrectChance;
+        if (computerIsCorrect) {
+          const computerIndex = players.findIndex(p => p.isComputer);
+          if (computerIndex !== -1) {
+            updatedPlayers[computerIndex].position += 1;
+            updatedPlayers[computerIndex].score += 10;
           }
         }
-        setPlayers(updatedPlayers);
+      }
+      setPlayers(updatedPlayers);
+      
+      setTimeout(async () => {
+        setShowFeedback(false);
+        setSelectedAnswer(null);
         
-        // Nächste Frage im Singleplayer
-        setTimeout(async () => {
-          setShowFeedback(false);
-          setSelectedAnswer(null);
-          
-          if (currentQuestion < questions.length - 1) {
-            setCurrentQuestion(currentQuestion + 1);
-          } else {
-            setGameFinished(true);
-            const finalPlayer = players.find(p => !p.isComputer);
-            await saveActivityToFirebase({
-                type: gameMode || 'free',
-                playerName: playerName,
-                score: finalPlayer?.score || 0,
-                topic: selectedTopic,
-                difficulty: difficulty,
-                questionCount: questions.length,
-                classroomCode: currentClassroom?.code || null
-            });
-            setView('results');
-          }
-        }, 1500);
+        if (currentQuestion < questions.length - 1) {
+          setCurrentQuestion(currentQuestion + 1);
+        } else {
+          setGameFinished(true);
+          const finalPlayer = players.find(p => !p.isComputer);
+          await saveActivityToFirebase({
+            type: gameMode || 'free',
+            playerName: playerName,
+            score: finalPlayer?.score || 0,
+            topic: selectedTopic,
+            difficulty: difficulty,
+            questionCount: questions.length,
+            classroomCode: currentClassroom?.code || null
+          });
+          setView('results');
+        }
+      }, 1500);
     }
   };
 
@@ -683,8 +728,8 @@ useEffect(() => {
     setAnswerHistory([]);
     setGameMode(null);
     setCurrentClassroom(null);
-    // NEU: State zurücksetzen
     setPlayerHasAnswered(false);
+    setRoundWinners([]);
   };
 
   if (view === 'home') {
@@ -793,19 +838,16 @@ useEffect(() => {
   }
 
   if (view === 'dashboard') {
-    // Statistiken berechnen
     const totalGames = dashboardData.length;
     const totalScore = dashboardData.reduce((sum, activity) => sum + (activity.score || 0), 0);
     const avgScore = totalGames > 0 ? Math.round(totalScore / totalGames) : 0;
     
-    // Aktivitäten nach Typ
     const gamesByType = dashboardData.reduce((acc, activity) => {
       const type = activity.type || 'unknown';
       acc[type] = (acc[type] || 0) + 1;
       return acc;
     }, {});
     
-    // Beliebte Themen
     const topicCounts = dashboardData.reduce((acc, activity) => {
       const topic = activity.topic || 'Unbekannt';
       acc[topic] = (acc[topic] || 0) + 1;
@@ -815,7 +857,6 @@ useEffect(() => {
       .sort((a, b) => b[1] - a[1])
       .slice(0, 5);
     
-    // Schwierigkeitsverteilung
     const difficultyStats = dashboardData.reduce((acc, activity) => {
       const diff = activity.difficulty || 'unbekannt';
       acc[diff] = (acc[diff] || 0) + 1;
@@ -846,7 +887,6 @@ useEffect(() => {
               </div>
             ) : (
               <>
-                {/* Statistik-Übersicht */}
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
                   <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-xl p-6 border-2 border-blue-200">
                     <div className="text-4xl font-bold text-blue-600 mb-2">{totalGames}</div>
@@ -873,7 +913,6 @@ useEffect(() => {
                   </div>
                 </div>
 
-                {/* Aktivitätsorte (Spielmodi) */}
                 <div className="bg-gradient-to-r from-indigo-50 to-purple-50 rounded-xl p-6 mb-8">
                   <h2 className="text-2xl font-bold text-gray-800 mb-4">📍 Aktivität nach Spielort</h2>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -903,7 +942,6 @@ useEffect(() => {
                   </div>
                 </div>
 
-                {/* Top Themen */}
                 {topTopics.length > 0 && (
                   <div className="bg-gradient-to-r from-yellow-50 to-orange-50 rounded-xl p-6 mb-8">
                     <h2 className="text-2xl font-bold text-gray-800 mb-4">🔥 Beliebteste Themen</h2>
@@ -921,7 +959,6 @@ useEffect(() => {
                   </div>
                 )}
 
-                {/* Schwierigkeitsverteilung */}
                 <div className="bg-gradient-to-r from-red-50 to-pink-50 rounded-xl p-6 mb-8">
                   <h2 className="text-2xl font-bold text-gray-800 mb-4">⚡ Schwierigkeitsgrad</h2>
                   <div className="grid grid-cols-3 gap-4">
@@ -945,7 +982,6 @@ useEffect(() => {
                   </div>
                 </div>
 
-                {/* Aktivitätenliste */}
                 <div>
                   <h2 className="text-2xl font-bold text-gray-800 mb-4">📋 Letzte Aktivitäten</h2>
                   <div className="space-y-4">
@@ -1401,7 +1437,6 @@ useEffect(() => {
             </div>
           </div>
 
-          {/* FÜR DEN HOST */}
           {userRole === 'host' && (() => {
             const enoughPlayers = players.length >= 2;
             const questionsLoaded = questions.length > 0;
@@ -1433,7 +1468,6 @@ useEffect(() => {
             );
           })()}
           
-          {/* FÜR DIE ANDEREN SPIELER */}
           {userRole !== 'host' && (
             <div className="text-center text-gray-600">
               {questions.length === 0 ? (
@@ -1448,7 +1482,7 @@ useEffect(() => {
         </div>
       </div>
     );
-  } // <--- DIESE KLAMMER HAT WAHRSCHEINLICH GEFEHLT
+  }
 
   if (view === 'organizer') {
     return (
@@ -1623,7 +1657,6 @@ useEffect(() => {
               {questions[currentQuestion]?.question}
             </h3>
             
-            {/* NEU: Warte-Anzeige für Multiplayer */}
             {roomId && playerHasAnswered && !showFeedback && (
               <div className="text-center p-8">
                 <div className="text-2xl font-bold text-purple-700">Antwort gespeichert!</div>
@@ -1631,7 +1664,6 @@ useEffect(() => {
               </div>
             )}
             
-            {/* Antwort-Buttons nur anzeigen, wenn noch nicht geantwortet wurde */}
             {(!roomId || !playerHasAnswered || showFeedback) && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {questions[currentQuestion]?.answers.map((answer, index) => {
@@ -1644,7 +1676,6 @@ useEffect(() => {
                     <button
                       key={index}
                       onClick={() => handleAnswer(index)}
-                      // GEÄNDERT: Button wird auch blockiert, wenn Spieler bereits geantwortet hat
                       disabled={showFeedback || (roomId && playerHasAnswered)}
                       className={`p-6 rounded-xl text-lg font-semibold transition-all transform hover:scale-105 ${
                         showAsCorrect
@@ -1670,18 +1701,15 @@ useEffect(() => {
 
   if (view === 'results') {
     const sortedPlayers = [...players].sort((a, b) => b.score - a.score);
-
-    // NEU: Finde den aktuellen Spieler und seinen Platz in der Rangliste
     const currentPlayerRank = sortedPlayers.findIndex(p => p.id === playerId) + 1;
     const isComputerGame = players.some(p => p.isComputer);
-
-    // NEU: Wenn es ein Einzelspieler-Spiel ist, finde den menschlichen Spieler
     const singlePlayerRank = isComputerGame ? sortedPlayers.findIndex(p => !p.isComputer) + 1 : 0;
-    
-    // NEU: Bestimme den finalen Rang, egal ob Single- oder Multiplayer
     const finalRank = isComputerGame ? singlePlayerRank : currentPlayerRank;
+    const playerRoundWins = {};
+    players.forEach(player => {
+      playerRoundWins[player.id] = roundWinners.filter(winnerId => winnerId === player.id).length;
+    });
 
-    // NEU: Eine nette Nachricht je nach Platzierung
     const getRankMessage = (rank) => {
       if (!rank || rank <= 0) return "Hier ist das Endergebnis!";
       if (rank === 1) return "🎉 Herzlichen Glückwunsch, du hast gewonnen! 🎉";
@@ -1696,19 +1724,17 @@ useEffect(() => {
           <div className="text-center mb-8">
             <Trophy className="w-24 h-24 mx-auto mb-4 text-yellow-500" />
             <h1 className="text-5xl font-bold text-gray-800 mb-2">Spiel beendet!</h1>
-            {/* NEU: Persönliche Rang-Nachricht */}
             <h2 className="text-2xl text-gray-700 mt-4">{getRankMessage(finalRank)}</h2>
           </div>
 
           <div className="space-y-4 mb-8">
             {sortedPlayers.map((player, index) => {
-              // NEU: Prüfen, ob dieser Eintrag der aktuelle Spieler ist
               const isCurrentUser = isComputerGame ? !player.isComputer : player.id === playerId;
+              const roundsWon = playerRoundWins[player.id] || 0;
 
               return (
               <div
                 key={player.id || index}
-                // GEÄNDERT: Fügt eine Hervorhebung für den aktuellen Spieler hinzu
                 className={`flex items-center gap-4 p-6 rounded-xl transition-all ${
                   isCurrentUser ? 'ring-4 ring-purple-500 shadow-lg' : ''
                 } ${
@@ -1728,27 +1754,49 @@ useEffect(() => {
                 <div className="flex-1">
                   <p className="text-xl font-bold">{player.name}</p>
                   <p className="text-lg">Punkte: {player.score}</p>
+                  {roomId && (
+                    <p className="text-sm text-gray-700 mt-1">
+                      🏆 {roundsWon} von {roundWinners.length} Runden gewonnen
+                    </p>
+                  )}
                 </div>
                 {index === 0 && <Trophy className="w-12 h-12 text-yellow-700" />}
               </div>
             )})}
           </div>
 
-          {/* Die Sektion für die Antwort-Historie bleibt unverändert */}
           {answerHistory.length > 0 && (
              <div className="mb-8">
                <h2 className="text-3xl font-bold text-gray-800 mb-6 text-center">Deine Antworten</h2>
+               
                <div className="space-y-4">
-                 {answerHistory.map((record, qIndex) => (
+                 {answerHistory.map((record, qIndex) => {
+                   const questionNum = record.questionNumber !== undefined ? record.questionNumber : qIndex;
+                   const didWinRound = roomId && playerId && roundWinners[questionNum] === playerId;
+                   
+                   return (
                    <div key={qIndex} className="bg-white rounded-xl p-6 shadow-lg">
                      <div className="flex items-start gap-4">
                        <div className={`text-3xl ${record.isCorrect ? 'text-green-500' : 'text-red-500'}`}>
                          {record.isCorrect ? '✓' : '✗'}
                        </div>
                        <div className="flex-1">
-                         <h3 className="text-lg font-bold text-gray-800 mb-3">
-                           Frage {qIndex + 1}: {record.question}
-                         </h3>
+                         <div className="flex items-center justify-between mb-3">
+                           <h3 className="text-lg font-bold text-gray-800">
+                             Frage {qIndex + 1}: {record.question}
+                           </h3>
+                           {didWinRound && (
+                             <div className="flex items-center gap-2 bg-yellow-100 px-3 py-1 rounded-full border-2 border-yellow-400">
+                               <Trophy className="w-5 h-5 text-yellow-600" />
+                               <span className="text-sm font-bold text-yellow-800">Runde gewonnen!</span>
+                             </div>
+                           )}
+                           {roomId && record.isCorrect && !didWinRound && (
+                             <div className="flex items-center gap-2 bg-blue-100 px-3 py-1 rounded-full border-2 border-blue-300">
+                               <span className="text-sm font-semibold text-blue-800">Richtig, aber nicht am schnellsten</span>
+                             </div>
+                           )}
+                         </div>
                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                            {record.answers.map((answer, aIndex) => {
                              const isCorrectAnswer = aIndex === record.correctIndex;
@@ -1775,7 +1823,7 @@ useEffect(() => {
                        </div>
                      </div>
                    </div>
-                 ))}
+                 )})}
                </div>
                
                <div className="mt-6 bg-gradient-to-r from-blue-50 to-purple-50 rounded-xl p-6">
@@ -1797,6 +1845,20 @@ useEffect(() => {
                      <p className="text-sm text-gray-600">Falsch</p>
                    </div>
                  </div>
+                 {/* NEU: Zeige auch Rundengewinne in der Statistik */}
+                 {roomId && playerId && (
+                   <div className="mt-4 pt-4 border-t-2 border-gray-200">
+                     <div className="flex items-center justify-center gap-3">
+                       <Trophy className="w-8 h-8 text-yellow-600" />
+                       <div className="text-center">
+                         <p className="text-3xl font-bold text-yellow-600">
+                           {roundWinners.filter(id => id === playerId).length}
+                         </p>
+                         <p className="text-sm text-gray-600">Runden gewonnen (am schnellsten)</p>
+                       </div>
+                     </div>
+                   </div>
+                 )}
                </div>
              </div>
            )}
